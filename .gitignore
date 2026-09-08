@@ -1,4 +1,5 @@
-data/
+data/*
+!data/download_reassemble.py
 .claude/settings.local.json
 *.pt
 *.pth
@@ -6,3 +7,4 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+!data/.gitkeep

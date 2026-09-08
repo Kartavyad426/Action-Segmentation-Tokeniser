@@ -152,17 +152,58 @@ Given REASSEMBLE's approximate scale (~148 demos) and the 8GB GPU:
 - Total GPU compute for one full pass: roughly 1.5-3 hours, likely spread across multiple
   sessions in practice for debugging/hyperparameter iteration.
 
-These are order-of-magnitude guesses based on typical scale for this model size at this
-demo count — not verified against REASSEMBLE's actual demo durations/frame counts, which
-milestone 1 above will confirm.
+These were order-of-magnitude guesses based on typical scale for this model size at this
+demo count, made before inspecting real data. Now confirmed: demos run ~100s+ each at
+~1000Hz telemetry (see Confirmed facts below) — more windows per demo than assumed, which
+likely keeps tokenizer training time in the same ballpark (window count drives batches/epoch,
+not wall-clock per sample meaningfully at this model size) but should be re-measured once
+the full 148-demo set is available rather than trusted as-is.
+
+## Confirmed facts from real data inspection (supersedes earlier assumptions)
+
+Verified by downloading and inspecting an actual REASSEMBLE demo file
+(`2025-01-09-13-57-17.h5`) rather than relying on the ~20Hz precedent assumption:
+
+- **Telemetry rate is ~970-1000Hz** (joint positions/velocities/efforts, gripper state,
+  measured force/torque), **not ~20Hz**. Pose/velocity run ~570Hz. This is far denser than
+  assumed — good for the tokenizer (more windows of training signal per demo) but the
+  window-length hyperparameter should be chosen in raw-sample terms accordingly (e.g. a
+  150ms window is ~150 samples at this rate, not ~3).
+- **Video is standard 30fps** (hama1/hama2 static cameras, ~29fps hand camera). There is
+  also a separate **event camera**: an async sparse event stream (~90k events/sec, not
+  frame-based) plus a distinct 6Hz RGB snapshot stream from the same physical camera. Event
+  data is out of scope for v1 (not part of the tokenizer/vision-enrichment design) but noted
+  here in case it becomes relevant later.
+- **REASSEMBLE ships two label granularities**, not one: **high-level** segments
+  (task/object-specific, e.g. "Pick Ethernet", "Insert Ethernet", each with a success flag)
+  and, nested inside each, **low-level segments** (e.g. Grasp, Lift, Approach, Align). The
+  low-level labels are close to exactly the closed-vocabulary manipulation primitives
+  `HANDOFF.md` describes (task/object-agnostic, expected to recur across demos) — **the
+  temporal classifier should target low-level labels**, not high-level ones, since
+  high-level labels are tied to specific objects/tasks and won't generalize the way the
+  project's vocabulary is meant to. High-level segments remain useful as a coarser
+  auxiliary signal (e.g. sanity-checking that low-level predictions nest correctly inside
+  high-level ones) but are not the primary classification target.
+- The 149-file TUData `data.zip` deposit is *already* scoped to the paper's official
+  148-demo benchmark split (`train_split1.txt` + `test_split1.txt`) — the one extra file
+  (`2025-01-10-16-17-40`) is the demo the dataset's own known-issues notes flag as having a
+  missing hand camera, which is why it's excluded from the split. No need to source the
+  larger 4,551-demo raw collection mentioned in the paper abstract.
+- **Download bandwidth from the TUData host is slow (~1-1.5MB/s measured, both via the
+  download script and raw `curl`), making the full 148-file / ~58.9GB set a ~10-11 hour
+  download.** Not a code issue — appears to be server-side throttling. For this pass, only
+  a 10-demo subset was downloaded (`data/reassemble/`, gitignored) to unblock writing and
+  testing tokenizer/data-loading code without waiting on the full set. Downloading the
+  remaining demos is deferred — needed before the real F1@50 milestone (item 5 in Data flow
+  & milestones) but not before that.
 
 ## Open questions / assumptions carried into implementation
 
-- REASSEMBLE's exact telemetry schema and sample rate — assumed ~20Hz per `HANDOFF.md`
-  precedent, not yet verified.
 - Tokenizer hyperparameters (window length, codebook size) — starting values given above,
   expected to be tuned empirically rather than fixed by this spec.
 - Whether any additional open dataset gets mixed into tokenizer pretraining — left open,
   decided opportunistically during implementation if it looks likely to help.
 - TCN vs. Transformer for the classifier is a staged decision (TCN first), not a permanent
   one — revisit if TCN can't capture sufficient context once measured on REASSEMBLE.
+- Full 148-demo download (needed for the real F1@50 milestone) has not run yet — only a
+  10-demo subset is present locally as of this writing.

@@ -1,0 +1,12 @@
+# Environment: conda env "robotics-phase2", python 3.12.
+# torch installed separately via https://download.pytorch.org/whl/cu128 (Blackwell GPU, CUDA 13.2 driver).
+torch
+numpy
+opencv-python
+einops
+tqdm
+pyyaml
+matplotlib
+scikit-learn
+pytest
+huggingface_hub
