@@ -1,11 +1,30 @@
 """Train the VQ-VAE motion tokenizer on a list of REASSEMBLE demo files."""
 
+import hashlib
+import json
+from pathlib import Path
+
 import torch
 from torch.utils.data import DataLoader
 
 from tokenizer.data import load_demo, resample_to_grid
 from tokenizer.model import MotionTokenizer
 from tokenizer.windowing import WindowedTelemetryDataset
+
+
+def tokenizer_fingerprint(demo_paths, **hyperparameters) -> str:
+    """Identifies the exact training configuration a checkpoint came from.
+
+    A checkpoint carries a codebook and normalization statistics fitted to one specific set
+    of demos under one specific set of hyperparameters. Reloading it for a run that changed
+    either would silently apply the wrong tokenizer, and nothing downstream would notice.
+    Demo order does not matter; demo membership does.
+    """
+    payload = {
+        "demos": sorted(Path(p).stem for p in demo_paths),
+        "hyperparameters": {k: hyperparameters[k] for k in sorted(hyperparameters)},
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
 
 def _load_all_telemetry(demo_paths: list[str]):
@@ -98,6 +117,10 @@ def train_tokenizer(
             "mean": dataset.mean,
             "std": dataset.std,
             "config": {
+                "fingerprint": tokenizer_fingerprint(
+                    demo_paths, window=window, stride=stride, latent_dim=latent_dim,
+                    num_codes=num_codes, hidden=hidden, epochs=epochs, batch_size=batch_size, lr=lr,
+                ),
                 "in_channels": in_channels,
                 "window": window,
                 "latent_dim": latent_dim,

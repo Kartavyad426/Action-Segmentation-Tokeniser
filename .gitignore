@@ -8,3 +8,7 @@ __pycache__/
 .venv/
 venv/
 !data/.gitkeep
+runs/
+vision_cache/
+run_full.log
+run_val.log

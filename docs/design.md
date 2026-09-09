@@ -111,6 +111,36 @@ was done about it, and why that solution rather than another.
 See `docs/hyperparameters.md` for every hyperparameter, where it is set, and which ones
 are worth changing.
 
+## How to run
+
+```bash
+# tuning runs: trains on 89 demos, scores on the 22 validation demos
+python -m temporal_classifier.compare --eval-on val
+
+# the final number: folds val back into training (111 demos) and scores on the
+# 37-demo official test split. Only run this once, with hyperparameters frozen.
+python -m temporal_classifier.compare --eval-on test
+```
+
+Must be invoked as `python -m temporal_classifier.compare`, not
+`python temporal_classifier/compare.py` — the latter puts `temporal_classifier/` on
+`sys.path` instead of the repo root, and the package's own imports fail. Tests never catch
+this because pytest adds the rootdir itself.
+
+Flags:
+
+- `--eval-on {val,test}` — which split to score on. Defaults to `val`; `test` prints a
+  warning, since anything tuned against it stops being comparable to published numbers.
+- `--keep-checkpoint` — reuse an existing `tokenizer_checkpoint.pt` instead of retraining
+  from scratch. Off by default: a checkpoint left by a smoke test must not silently become
+  the tokenizer for a full run.
+- `--skip-gates` — train the classifier even if the tokenizer fails its health checks.
+
+The run aborts before classifier training if the tokenizer fails its gates, which costs
+minutes rather than the hours the three classifier arms take. Vision features are cached to
+`vision_cache/` and are *not* cleared between runs: they key on token centers, so they stay
+valid when the tokenizer is retrained and self-invalidate if `window` changes.
+
 ## Key implementation decisions and why
 
 - **100Hz resampling grid, not the originally-assumed ~20Hz.** Real REASSEMBLE telemetry

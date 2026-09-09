@@ -232,3 +232,27 @@ def test_smoothing_weight_is_tunable(tmp_path):
         )
 
     assert seen["smoothing_weight"] == 0.5
+
+
+@requires_data
+def test_run_training_records_per_epoch_history(tmp_path):
+    # 30 epochs of classifier training previously printed nothing and returned only a final
+    # score, so a run that was diverging looked identical to one that was converging.
+    train_paths, val_paths = split_available_demos()
+    all_paths = (train_paths + val_paths)[:4]
+    train_subset, val_subset = all_paths[:-1], all_paths[-1:]
+
+    tokenizer_ckpt = str(tmp_path / "tokenizer.pt")
+    train_tokenizer(train_subset, tokenizer_ckpt, epochs=1, batch_size=8, device="cpu")
+
+    result = run_training(
+        tokenizer_ckpt, train_subset, val_subset, epochs=4, channels=8, num_layers=2,
+        num_stages=2, device="cpu", eval_every=2,
+    )
+
+    assert [h["epoch"] for h in result["history"]] == [1, 2, 3, 4]
+    assert all(isinstance(h["train_loss"], float) for h in result["history"])
+    # val F1 is measured periodically, not every epoch -- it costs a full forward pass
+    scored = [h for h in result["history"] if h["val_f1"] is not None]
+    assert [h["epoch"] for h in scored] == [2, 4]
+    assert result["val_f1"] == scored[-1]["val_f1"]

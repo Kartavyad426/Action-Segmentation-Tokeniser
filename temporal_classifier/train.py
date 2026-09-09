@@ -1,5 +1,7 @@
 """Train the MS-TCN temporal classifier on frozen tokenizer embeddings."""
 
+import time
+
 import numpy as np
 import torch
 
@@ -9,6 +11,8 @@ from temporal_classifier.labels import align_labels_to_grid, build_vocab
 from temporal_classifier.losses import mstcn_loss
 from temporal_classifier.metrics import f1_at_k_corpus
 from temporal_classifier.model import MSTCN
+from pathlib import Path
+
 from tokenizer.data import RATE_HZ, load_demo, resample_to_grid
 from tokenizer.train import load_checkpoint
 from tokenizer.windowing import demo_to_sequence
@@ -39,9 +43,11 @@ def _prepare_split(
     device: str = "cuda",
     vision_cache_dir: str | None = None,
     vision_window_s: float | None = None,
+    verbose: bool = True,
 ):
     sequences, vision_seqs, label_seqs = [], [], []
-    for path in demo_paths:
+    for i, path in enumerate(demo_paths, start=1):
+        started = time.time()
         embeddings, centers, segments = build_demo_sequence(tokenizer_model, mean, std, path, window)
         labels = align_labels_to_grid(centers, segments, vocab)
         sequences.append(embeddings)
@@ -53,6 +59,12 @@ def _prepare_split(
                     cache_dir=vision_cache_dir, window_s=vision_window_s,
                 )
             )
+            if verbose:
+                print(
+                    f"    vision {i}/{len(demo_paths)}  {Path(path).stem}  "
+                    f"{len(centers)} tokens  {time.time() - started:.1f}s",
+                    flush=True,
+                )
     return sequences, vision_seqs, label_seqs
 
 
@@ -75,6 +87,8 @@ def run_training(
     pool_vision_over_window: bool = False,
     smoothing_weight: float = 0.15,
     tau: float = 4.0,
+    eval_every: int = 5,
+    verbose: bool = True,
 ) -> dict:
     if device == "cpu":
         # See tokenizer/train.py: default CPU intra-op thread pool causes ~140x overhead on
@@ -96,11 +110,11 @@ def run_training(
 
     train_seqs, train_vision, train_labels = _prepare_split(
         tokenizer_model, mean, std, train_paths, window, vocab, use_vision, vision_encoder,
-        camera_key, device, vision_cache_dir, vision_window_s,
+        camera_key, device, vision_cache_dir, vision_window_s, verbose,
     )
     val_seqs, val_vision, val_labels = _prepare_split(
         tokenizer_model, mean, std, val_paths, window, vocab, use_vision, vision_encoder,
-        camera_key, device, vision_cache_dir, vision_window_s,
+        camera_key, device, vision_cache_dir, vision_window_s, verbose,
     )
 
     fusion = None
@@ -124,8 +138,21 @@ def run_training(
             x = fusion(x, v)
         return x.unsqueeze(0)
 
-    for _ in range(epochs):
+    def score_validation():
+        model.eval()
+        pairs = []
+        with torch.no_grad():
+            for j, labels in enumerate(val_labels):
+                x = build_input(val_seqs[j], val_vision[j] if use_vision else None)
+                pred = model(x)[-1].argmax(dim=1).squeeze(0).cpu().numpy()
+                pairs.append((pred, labels))
         model.train()
+        return f1_at_k_corpus(pairs)
+
+    history = []
+    for epoch in range(1, epochs + 1):
+        model.train()
+        started, running = time.time(), 0.0
         for i, labels in enumerate(train_labels):
             x = build_input(train_seqs[i], train_vision[i] if use_vision else None)
             y = torch.from_numpy(labels).unsqueeze(0).to(device)
@@ -134,6 +161,18 @@ def run_training(
             loss = mstcn_loss(outputs, y, smoothing_weight, tau)
             loss.backward()
             optimizer.step()
+            running += loss.item()
+
+        train_loss = running / max(len(train_labels), 1)
+        val_f1 = score_validation() if (eval_every and epoch % eval_every == 0) else None
+        history.append({"epoch": epoch, "train_loss": train_loss, "val_f1": val_f1})
+        if verbose:
+            f1_str = f"  val_f1 {val_f1:.4f}" if val_f1 is not None else ""
+            print(
+                f"    epoch {epoch:>3}/{epochs}  loss {train_loss:.5f}{f1_str}"
+                f"  ({time.time() - started:.1f}s)",
+                flush=True,
+            )
 
     model.eval()
     pred_gt_pairs = []
@@ -144,4 +183,6 @@ def run_training(
             pred_gt_pairs.append((pred, labels))
 
     val_f1 = f1_at_k_corpus(pred_gt_pairs)
-    return {"model": model, "fusion": fusion, "vocab": vocab, "val_f1": val_f1}
+    if history and history[-1]["val_f1"] is None:
+        history[-1]["val_f1"] = val_f1
+    return {"model": model, "fusion": fusion, "vocab": vocab, "val_f1": val_f1, "history": history}
