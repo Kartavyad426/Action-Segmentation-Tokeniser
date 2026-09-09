@@ -2,11 +2,11 @@
 
 import numpy as np
 import torch
-import torch.nn as nn
 
 from enrichment.fuse import ConcatProjectFusion
 from enrichment.vision_features import extract_frame_features
 from temporal_classifier.labels import align_labels_to_grid, build_vocab
+from temporal_classifier.losses import mstcn_loss
 from temporal_classifier.metrics import f1_at_k_corpus
 from temporal_classifier.model import MSTCN
 from tokenizer.data import RATE_HZ, load_demo, resample_to_grid
@@ -73,6 +73,8 @@ def run_training(
     fusion_out_dim: int = 128,
     vision_cache_dir: str | None = None,
     pool_vision_over_window: bool = False,
+    smoothing_weight: float = 0.15,
+    tau: float = 4.0,
 ) -> dict:
     if device == "cpu":
         # See tokenizer/train.py: default CPU intra-op thread pool causes ~140x overhead on
@@ -114,7 +116,6 @@ def run_training(
     model = MSTCN(classifier_in_dim, len(vocab), channels, num_layers, num_stages).to(device)
     params = list(model.parameters()) + (list(fusion.parameters()) if fusion else [])
     optimizer = torch.optim.Adam(params, lr=lr)
-    loss_fn = nn.CrossEntropyLoss()
 
     def build_input(embeddings, vision_feats):
         x = torch.from_numpy(embeddings).to(device)
@@ -130,7 +131,7 @@ def run_training(
             y = torch.from_numpy(labels).unsqueeze(0).to(device)
             optimizer.zero_grad()
             outputs = model(x)
-            loss = sum(loss_fn(out, y) for out in outputs)
+            loss = mstcn_loss(outputs, y, smoothing_weight, tau)
             loss.backward()
             optimizer.step()
 

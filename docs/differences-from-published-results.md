@@ -195,6 +195,30 @@ threshold-free rather than inventing numbers:
   token changes no better placed than random ones carry no information about where actions
   begin and end.
 
+🟢 ~~**No smoothing loss in the classifier objective — "MS-TCN" in architecture only.**~~
+**Fixed.** The classifier trained on plain `CrossEntropyLoss` summed across stages. MS-TCN is
+an architecture *and* a training objective, and the paper attributes a large share of its
+gains to the loss rather than the stacking; our spec and plan selected it purely as an
+architecture (the plan wrote `loss_fn = nn.CrossEntropyLoss()` verbatim, and neither document
+mentions smoothing, T-MSE, or over-segmentation anywhere). The implementation was faithful to
+the plan; the plan was incomplete. That made our numbers not-quite-MS-TCN while labelled
+MS-TCN, which matters directly for comparison against M2R2's MSTCN-family heads.
+
+Why it matters beyond nomenclature: cross-entropy scores each token independently and has no
+objection to a prediction that flips class between neighbouring 150 ms tokens. Segmental
+F1@50 objects strongly — that flicker becomes many short segments, at most one of which can
+satisfy the 0.5 IoU match while the rest count as false positives. A model can therefore be
+accurate per-token and poor at F1@50 with nothing in the objective pushing back.
+
+`temporal_classifier/losses.py` adds `truncated_mse_smoothing_loss` (Farha & Gall 2019):
+squared frame-to-frame difference of log-probabilities, clamped at `tau**2` (tau=4), with the
+previous frame detached, weighted 0.15 and summed over every stage. Truncation is what keeps
+it from fighting the cross-entropy — a real boundary *should* produce a large log-prob jump,
+so an untruncated penalty would punish exactly the transitions we want predicted; clamping
+caps the cost of any single frame pair while sustained flicker still accumulates.
+`smoothing_weight` and `tau` are tunable via `run_training`; `smoothing_weight=0` reproduces
+the previous behaviour exactly.
+
 ## Minor implementation notes (unlikely to affect result validity, tracked for completeness)
 
 🟡 Checkpoint config doesn't record telemetry channel names/order or the resample rate —

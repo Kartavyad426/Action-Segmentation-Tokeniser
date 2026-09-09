@@ -236,11 +236,50 @@ names no numbers. Rather than invent three:
 
 ---
 
+## 7. "MS-TCN" in architecture only — no smoothing loss
+
+**Symptom.** The classifier trained on plain `CrossEntropyLoss` summed across stages.
+
+**Why we did not have it.** The spec selected MS-TCN as an *architecture* — "stacked dilated
+convolutions for a large receptive field" — and the plan spelled the training loop out
+verbatim, including `loss_fn = nn.CrossEntropyLoss()`. Neither document mentions smoothing,
+T-MSE, or over-segmentation anywhere. The implementation was faithful to the plan; the plan
+was incomplete. MS-TCN is an architecture *and* an objective, and its paper attributes a
+large share of its gains to the loss rather than the stacking.
+
+**Why it mattered.** Cross-entropy scores every token independently, so it has no objection
+to a prediction that flips class between neighbouring 150 ms tokens — per-token accuracy can
+be excellent. Segmental F1@50 objects strongly: that flicker becomes many short segments, at
+most one of which can satisfy the 0.5 IoU match while the rest are false positives. A model
+can be accurate per-token and poor at F1@50, with nothing in the objective pushing back. This
+is the standard over-segmentation failure, and it is what the metric we report actually
+measures.
+
+**Fix.** `temporal_classifier/losses.py`: squared frame-to-frame difference of
+log-probabilities, clamped at `tau**2` (tau=4), previous frame detached, weight 0.15, summed
+over every stage. `smoothing_weight=0` reproduces the old behaviour exactly.
+
+**Why truncation is the load-bearing detail.** A real action boundary *should* produce a
+large jump in log-probabilities — that is the model doing its job. An untruncated smoothing
+penalty would punish precisely the transitions we want predicted. Clamping caps what any one
+frame pair can contribute, so a genuine boundary is cheap while sustained flicker — many
+small penalties in a row — still accumulates into real pressure.
+
+**Why the previous frame is detached.** The loss should pull the current frame toward the
+previous one, not drag the previous frame backwards to meet it.
+
+Both details are pinned by mutation-tested assertions: removing the clamp fails the
+truncation test, removing the detach fails the gradient test.
+
+**Ordering note.** This must land before any class weighting. Upweighting rare classes pushes
+toward more short spurious segments — directly against this term.
+
+---
+
 ## Still open
 
 | | issue | note |
 |---|---|---|
-| 🔴 | No T-MSE smoothing loss | MS-TCN's signature term, absent. Loss is plain CE summed over stages. Targets over-segmentation, which is exactly what F1@50 punishes. Expect a larger effect than any class-imbalance treatment. |
 | 🟡 | `train_tokenizer` has no per-epoch or held-out loss | `final_loss` is the last training batch. Cannot distinguish converged from overfit. |
 | 🟡 | No class-imbalance handling | See `docs/hyperparameters.md`. Resampling is the wrong tool; weighted CE is the option, but it works against the smoothing loss. |
 | 🟡 | `f1_at_k` returns 0.0 for demos with no non-background ground truth | Drags averages down as if a total miss rather than being excluded. |

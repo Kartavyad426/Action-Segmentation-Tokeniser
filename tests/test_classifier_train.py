@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from enrichment.vision_features import VISION_FEATURE_DIM
+from temporal_classifier.losses import mstcn_loss
 from temporal_classifier.train import run_training
 from tokenizer.train import train_tokenizer
 from tokenizer.windowing import split_available_demos
@@ -178,3 +179,56 @@ def test_pooling_vision_passes_the_token_duration_as_the_window(tmp_path):
         )
 
     assert seen["window_s"] == pytest.approx(0.15)
+
+
+@requires_data
+def test_run_training_uses_the_smoothing_loss_by_default(tmp_path):
+    # MS-TCN's signature term. If run_training silently dropped it, F1@50 would suffer from
+    # over-segmentation with nothing in the tests to say why.
+    seen = {}
+    real_loss = mstcn_loss
+
+    def _capturing_loss(outputs, targets, smoothing_weight=0.15, tau=4.0):
+        seen["smoothing_weight"] = smoothing_weight
+        seen["tau"] = tau
+        return real_loss(outputs, targets, smoothing_weight, tau)
+
+    train_paths, val_paths = split_available_demos()
+    all_paths = (train_paths + val_paths)[:4]
+    train_subset, val_subset = all_paths[:-1], all_paths[-1:]
+
+    tokenizer_ckpt = str(tmp_path / "tokenizer.pt")
+    train_tokenizer(train_subset, tokenizer_ckpt, epochs=1, batch_size=8, device="cpu")
+
+    with patch("temporal_classifier.train.mstcn_loss", side_effect=_capturing_loss):
+        run_training(
+            tokenizer_ckpt, train_subset, val_subset, epochs=1, channels=8,
+            num_layers=2, num_stages=2, device="cpu",
+        )
+
+    assert seen["smoothing_weight"] == 0.15
+    assert seen["tau"] == 4.0
+
+
+@requires_data
+def test_smoothing_weight_is_tunable(tmp_path):
+    seen = {}
+
+    def _capturing_loss(outputs, targets, smoothing_weight=0.15, tau=4.0):
+        seen["smoothing_weight"] = smoothing_weight
+        return mstcn_loss(outputs, targets, smoothing_weight, tau)
+
+    train_paths, val_paths = split_available_demos()
+    all_paths = (train_paths + val_paths)[:4]
+    train_subset, val_subset = all_paths[:-1], all_paths[-1:]
+
+    tokenizer_ckpt = str(tmp_path / "tokenizer.pt")
+    train_tokenizer(train_subset, tokenizer_ckpt, epochs=1, batch_size=8, device="cpu")
+
+    with patch("temporal_classifier.train.mstcn_loss", side_effect=_capturing_loss):
+        run_training(
+            tokenizer_ckpt, train_subset, val_subset, epochs=1, channels=8,
+            num_layers=2, num_stages=2, device="cpu", smoothing_weight=0.5,
+        )
+
+    assert seen["smoothing_weight"] == 0.5
