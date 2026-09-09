@@ -9,6 +9,7 @@ from tokenizer.windowing import (
     compute_norm_stats,
     demo_to_sequence,
     split_available_demos,
+    split_available_demos_3way,
 )
 
 DEMO_PATH = "data/reassemble/2025-01-09-13-57-17.h5"
@@ -90,3 +91,78 @@ def test_split_available_demos_intersects_disk_with_official_split(tmp_path):
 
     assert train_paths == [str(data_dir / "demo_a.h5")]
     assert val_paths == [str(data_dir / "demo_c.h5")]
+
+
+def _write_splits(tmp_path, train_stems, test_stems):
+    splits = tmp_path / "splits"
+    splits.mkdir()
+    (splits / "train_split1.txt").write_text("\n".join(train_stems) + "\n")
+    (splits / "test_split1.txt").write_text("\n".join(test_stems) + "\n")
+    return splits
+
+
+def _write_demos(tmp_path, stems):
+    data = tmp_path / "demos"
+    data.mkdir(parents=True, exist_ok=True)
+    for s in stems:
+        (data / f"{s}.h5").touch()
+    return data
+
+
+def test_three_way_split_is_disjoint_and_covers_the_official_train_list(tmp_path):
+    train_stems = [f"demo{i:03d}" for i in range(20)]
+    test_stems = [f"held{i:03d}" for i in range(5)]
+    splits = _write_splits(tmp_path, train_stems, test_stems)
+    data = _write_demos(tmp_path, train_stems + test_stems)
+
+    tr, va, te = split_available_demos_3way(data_dir=str(data), splits_dir=str(splits), val_fraction=0.25)
+
+    assert set(tr) & set(va) == set()
+    assert set(tr) | set(va) == {str(data / f"{s}.h5") for s in train_stems}
+    assert len(te) == 5
+    assert len(va) == 5
+
+
+def test_three_way_split_never_puts_a_test_demo_in_train_or_val(tmp_path):
+    train_stems = [f"demo{i:03d}" for i in range(20)]
+    test_stems = [f"held{i:03d}" for i in range(5)]
+    splits = _write_splits(tmp_path, train_stems, test_stems)
+    data = _write_demos(tmp_path, train_stems + test_stems)
+
+    tr, va, te = split_available_demos_3way(data_dir=str(data), splits_dir=str(splits))
+
+    held = {str(data / f"{s}.h5") for s in test_stems}
+    assert not (set(tr) & held)
+    assert not (set(va) & held)
+    assert set(te) == held
+
+
+def test_val_assignment_does_not_shift_as_more_demos_finish_downloading(tmp_path):
+    # The assignment is derived from the canonical split file, not from what happens to be
+    # on disk -- otherwise a demo's train/val membership would change mid-download and the
+    # validation set would silently stop being held out.
+    train_stems = [f"demo{i:03d}" for i in range(20)]
+    splits = _write_splits(tmp_path, train_stems, ["held000"])
+
+    partial = _write_demos(tmp_path / "a", train_stems[:10])
+    complete = _write_demos(tmp_path / "b", train_stems)
+
+    _, va_partial, _ = split_available_demos_3way(data_dir=str(partial), splits_dir=str(splits), val_fraction=0.25)
+    _, va_complete, _ = split_available_demos_3way(data_dir=str(complete), splits_dir=str(splits), val_fraction=0.25)
+
+    partial_stems = {os.path.basename(p) for p in va_partial}
+    complete_stems = {os.path.basename(p) for p in va_complete}
+    assert partial_stems <= complete_stems, "val membership changed as demos arrived"
+
+
+def test_three_way_split_is_deterministic_and_seed_controlled(tmp_path):
+    train_stems = [f"demo{i:03d}" for i in range(20)]
+    splits = _write_splits(tmp_path, train_stems, ["held000"])
+    data = _write_demos(tmp_path, train_stems)
+
+    a = split_available_demos_3way(data_dir=str(data), splits_dir=str(splits), seed=0)[1]
+    b = split_available_demos_3way(data_dir=str(data), splits_dir=str(splits), seed=0)[1]
+    c = split_available_demos_3way(data_dir=str(data), splits_dir=str(splits), seed=7)[1]
+
+    assert a == b
+    assert set(a) != set(c)
