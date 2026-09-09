@@ -312,3 +312,68 @@ def test_extract_frame_features_handles_repeated_frame_requests():
 
     assert features.shape == (3, VISION_FEATURE_DIM)
     assert encoder.batch_sizes == [1], "the same frame should only be encoded once"
+
+
+class _DeterministicEncoder:
+    """Content-dependent and deterministic, so pooled features can be checked against the
+    mean of the individually-extracted frames they should be pooling."""
+
+    def __init__(self):
+        self.batch_sizes = []
+
+    def __call__(self, tensor):
+        self.batch_sizes.append(tensor.shape[0])
+        return tensor.mean(dim=(2, 3)).repeat(1, VISION_FEATURE_DIM // 3)
+
+    @property
+    def n_frames(self):
+        return sum(self.batch_sizes)
+
+
+@requires_demo
+def test_window_pooling_encodes_more_frames_than_tokens():
+    # Default sampling takes one frame per token and discards ~78% of the video. With
+    # window_s set, every frame inside the token's window is encoded and averaged.
+    times = np.linspace(1736427440.0, 1736427445.0, 4)
+
+    nearest = _DeterministicEncoder()
+    extract_frame_features(DEMO_PATH, times, nearest, device="cpu")
+
+    pooled = _DeterministicEncoder()
+    extract_frame_features(DEMO_PATH, times, pooled, device="cpu", window_s=0.15)
+
+    assert nearest.n_frames == 4
+    assert pooled.n_frames > 4, "window pooling should encode more than one frame per token"
+
+
+@requires_demo
+def test_window_pooled_feature_equals_the_mean_of_its_windows_frames():
+    import h5py
+
+    center = 1736427442.0
+    window_s = 0.15
+    with h5py.File(DEMO_PATH, "r") as f:
+        cam_ts = f["timestamps/hama1"][:]
+    in_window = cam_ts[(cam_ts >= center - window_s / 2) & (cam_ts <= center + window_s / 2)]
+    assert len(in_window) > 1, "fixture assumes several frames land inside one window"
+
+    pooled = extract_frame_features(
+        DEMO_PATH, np.array([center]), _DeterministicEncoder(), device="cpu", window_s=window_s
+    )
+    individually = extract_frame_features(
+        DEMO_PATH, in_window, _DeterministicEncoder(), device="cpu"
+    )
+
+    assert np.allclose(pooled[0], individually.mean(axis=0), atol=1e-5)
+
+
+@requires_demo
+def test_window_pooling_uses_a_different_cache_entry_than_nearest_frame(tmp_path):
+    # Same demo, same token centers, different aggregation -- must not collide.
+    times = np.linspace(1736427440.0, 1736427445.0, 4)
+
+    extract_frame_features(DEMO_PATH, times, _DeterministicEncoder(), device="cpu", cache_dir=str(tmp_path))
+    second = _DeterministicEncoder()
+    extract_frame_features(DEMO_PATH, times, second, device="cpu", cache_dir=str(tmp_path), window_s=0.15)
+
+    assert second.n_frames > 0, "pooled request wrongly hit the nearest-frame cache entry"

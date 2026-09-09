@@ -9,7 +9,7 @@ from enrichment.vision_features import extract_frame_features
 from temporal_classifier.labels import align_labels_to_grid, build_vocab
 from temporal_classifier.metrics import f1_at_k_corpus
 from temporal_classifier.model import MSTCN
-from tokenizer.data import load_demo, resample_to_grid
+from tokenizer.data import RATE_HZ, load_demo, resample_to_grid
 from tokenizer.train import load_checkpoint
 from tokenizer.windowing import demo_to_sequence
 
@@ -38,6 +38,7 @@ def _prepare_split(
     camera_key: str = "hama1",
     device: str = "cuda",
     vision_cache_dir: str | None = None,
+    vision_window_s: float | None = None,
 ):
     sequences, vision_seqs, label_seqs = [], [], []
     for path in demo_paths:
@@ -49,7 +50,7 @@ def _prepare_split(
             vision_seqs.append(
                 extract_frame_features(
                     path, centers, vision_encoder, camera_key, device=device,
-                    cache_dir=vision_cache_dir,
+                    cache_dir=vision_cache_dir, window_s=vision_window_s,
                 )
             )
     return sequences, vision_seqs, label_seqs
@@ -71,6 +72,7 @@ def run_training(
     camera_key: str = "hama1",
     fusion_out_dim: int = 128,
     vision_cache_dir: str | None = None,
+    pool_vision_over_window: bool = False,
 ) -> dict:
     if device == "cpu":
         # See tokenizer/train.py: default CPU intra-op thread pool causes ~140x overhead on
@@ -79,6 +81,9 @@ def run_training(
 
     tokenizer_model, mean, std, config = load_checkpoint(tokenizer_ckpt_path)
     window = config["window"]
+    # Pool over exactly the token's own duration, so the vision window and the motion window
+    # describe the same slice of time by construction.
+    vision_window_s = window / RATE_HZ if pool_vision_over_window else None
 
     if vocab is None:
         all_segments = []
@@ -89,11 +94,11 @@ def run_training(
 
     train_seqs, train_vision, train_labels = _prepare_split(
         tokenizer_model, mean, std, train_paths, window, vocab, use_vision, vision_encoder,
-        camera_key, device, vision_cache_dir,
+        camera_key, device, vision_cache_dir, vision_window_s,
     )
     val_seqs, val_vision, val_labels = _prepare_split(
         tokenizer_model, mean, std, val_paths, window, vocab, use_vision, vision_encoder,
-        camera_key, device, vision_cache_dir,
+        camera_key, device, vision_cache_dir, vision_window_s,
     )
 
     fusion = None

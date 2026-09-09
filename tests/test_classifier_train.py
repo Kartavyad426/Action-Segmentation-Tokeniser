@@ -34,7 +34,7 @@ def test_run_training_produces_a_val_f1_score(tmp_path):
 
 
 def _fake_extract_frame_features(h5_path, frame_times, encoder, camera_key="hama1", device="cuda",
-                                 batch_size=32, cache_dir=None):
+                                 batch_size=32, cache_dir=None, window_s=None):
     # run_training(..., device="cpu") below must thread that device all the way through
     # to this call. If it silently falls back to the "cuda" default (Finding 1's bug),
     # catch it here instead of only in a real GPU/CPU tensor-mismatch crash.
@@ -130,7 +130,7 @@ def test_run_training_threads_the_vision_cache_dir_through_to_extraction(tmp_pat
     seen = {}
 
     def _capturing_extract(h5_path, frame_times, encoder, camera_key="hama1", device="cuda",
-                           batch_size=32, cache_dir=None):
+                           batch_size=32, cache_dir=None, window_s=None):
         seen["cache_dir"] = cache_dir
         return np.zeros((len(frame_times), VISION_FEATURE_DIM), dtype=np.float32)
 
@@ -150,3 +150,31 @@ def test_run_training_threads_the_vision_cache_dir_through_to_extraction(tmp_pat
         )
 
     assert seen["cache_dir"] == cache_dir
+
+
+@requires_data
+def test_pooling_vision_passes_the_token_duration_as_the_window(tmp_path):
+    # The pooling window must be the token's own duration (window / RATE_HZ), derived from
+    # the tokenizer config rather than passed in separately, so the two cannot drift apart.
+    seen = {}
+
+    def _capturing_extract(h5_path, frame_times, encoder, camera_key="hama1", device="cuda",
+                           batch_size=32, cache_dir=None, window_s=None):
+        seen["window_s"] = window_s
+        return np.zeros((len(frame_times), VISION_FEATURE_DIM), dtype=np.float32)
+
+    train_paths, val_paths = split_available_demos()
+    all_paths = (train_paths + val_paths)[:4]
+    train_subset, val_subset = all_paths[:-1], all_paths[-1:]
+
+    tokenizer_ckpt = str(tmp_path / "tokenizer.pt")
+    train_tokenizer(train_subset, tokenizer_ckpt, epochs=1, batch_size=8, device="cpu")
+
+    with patch("temporal_classifier.train.extract_frame_features", side_effect=_capturing_extract):
+        run_training(
+            tokenizer_ckpt, train_subset, val_subset, epochs=1, channels=8, num_layers=2,
+            num_stages=2, device="cpu", use_vision=True, vision_encoder=object(),
+            pool_vision_over_window=True,
+        )
+
+    assert seen["window_s"] == pytest.approx(0.15)

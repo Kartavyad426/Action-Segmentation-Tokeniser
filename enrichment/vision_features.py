@@ -61,12 +61,28 @@ def _video_file(h5_path: str, camera_key: str):
         yield tmp.name
 
 
-def _cache_path(cache_dir: str, h5_path: str, camera_key: str, frame_indices: list[int]) -> Path:
-    """Keyed on the demo, the camera, and the exact set of frames requested -- so a change
-    to the window config (which moves every token center) misses the cache rather than
-    silently serving features aligned to the old grid."""
-    key = hashlib.sha256(np.asarray(frame_indices, dtype=np.int64).tobytes()).hexdigest()[:16]
+def _cache_path(cache_dir: str, h5_path: str, camera_key: str, groups: list[list[int]]) -> Path:
+    """Keyed on the demo, the camera, and the exact per-token frame grouping -- so a change
+    to the window config (which moves every token center) or to the aggregation mode misses
+    the cache rather than silently serving features aligned to the old grid."""
+    payload = b"|".join(np.asarray(g, dtype=np.int64).tobytes() for g in groups)
+    key = hashlib.sha256(payload).hexdigest()[:16]
     return Path(cache_dir) / f"{Path(h5_path).stem}.{camera_key}.{key}.npy"
+
+
+def _frame_groups(cam_ts: np.ndarray, frame_times: np.ndarray, window_s: float | None) -> list[list[int]]:
+    """The video frames backing each token. One nearest frame by default; every frame inside
+    the token's window when `window_s` is set, which are then mean-pooled."""
+    if window_s is None:
+        return [[int(np.argmin(np.abs(cam_ts - t)))] for t in frame_times]
+
+    groups = []
+    for t in frame_times:
+        inside = np.flatnonzero((cam_ts >= t - window_s / 2) & (cam_ts <= t + window_s / 2))
+        if len(inside) == 0:  # window fell between frames (or outside the video)
+            inside = [int(np.argmin(np.abs(cam_ts - t)))]
+        groups.append([int(i) for i in inside])
+    return groups
 
 
 def _encode_batch(batch: list[np.ndarray], encoder, device: str) -> np.ndarray:
@@ -101,13 +117,15 @@ def extract_frame_features(
     device: str = "cuda",
     batch_size: int = 32,
     cache_dir: str | None = None,
+    window_s: float | None = None,
 ) -> np.ndarray:
     with h5py.File(h5_path, "r") as f:
         cam_ts = f[f"timestamps/{camera_key}"][:]
 
-    frame_indices = [int(np.argmin(np.abs(cam_ts - t))) for t in frame_times]
+    groups = _frame_groups(cam_ts, frame_times, window_s)
+    wanted = sorted({i for g in groups for i in g})
 
-    cache_file = _cache_path(cache_dir, h5_path, camera_key, frame_indices) if cache_dir else None
+    cache_file = _cache_path(cache_dir, h5_path, camera_key, groups) if cache_dir else None
     if cache_file is not None and cache_file.exists():
         return np.load(cache_file)
 
@@ -124,14 +142,16 @@ def extract_frame_features(
         batch_indices.clear()
 
     with _video_file(h5_path, camera_key) as video_path:
-        for idx, frame in _iter_wanted_frames(video_path, set(frame_indices)):
+        for idx, frame in _iter_wanted_frames(video_path, set(wanted)):
             batch.append(_preprocess_for_dinov2(frame))
             batch_indices.append(idx)
             if len(batch) == batch_size:
                 flush()
         flush()
 
-    features = np.stack([by_index[i] for i in frame_indices], axis=0)
+    features = np.stack(
+        [np.mean([by_index[i] for i in g], axis=0) for g in groups], axis=0
+    ).astype(np.float32)
 
     if cache_file is not None:
         cache_file.parent.mkdir(parents=True, exist_ok=True)
