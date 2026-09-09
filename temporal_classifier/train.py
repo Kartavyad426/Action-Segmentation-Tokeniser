@@ -7,7 +7,7 @@ import torch.nn as nn
 from enrichment.fuse import ConcatProjectFusion
 from enrichment.vision_features import extract_frame_features
 from temporal_classifier.labels import align_labels_to_grid, build_vocab
-from temporal_classifier.metrics import f1_at_k
+from temporal_classifier.metrics import f1_at_k_corpus
 from temporal_classifier.model import MSTCN
 from tokenizer.data import load_demo, resample_to_grid
 from tokenizer.train import load_checkpoint
@@ -36,6 +36,7 @@ def _prepare_split(
     use_vision: bool = False,
     vision_encoder=None,
     camera_key: str = "hama1",
+    device: str = "cuda",
 ):
     sequences, vision_seqs, label_seqs = [], [], []
     for path in demo_paths:
@@ -44,7 +45,7 @@ def _prepare_split(
         sequences.append(embeddings)
         label_seqs.append(labels)
         if use_vision:
-            vision_seqs.append(extract_frame_features(path, centers, vision_encoder, camera_key))
+            vision_seqs.append(extract_frame_features(path, centers, vision_encoder, camera_key, device=device))
     return sequences, vision_seqs, label_seqs
 
 
@@ -79,10 +80,10 @@ def run_training(
         vocab = build_vocab(all_segments)
 
     train_seqs, train_vision, train_labels = _prepare_split(
-        tokenizer_model, mean, std, train_paths, window, vocab, use_vision, vision_encoder, camera_key
+        tokenizer_model, mean, std, train_paths, window, vocab, use_vision, vision_encoder, camera_key, device
     )
     val_seqs, val_vision, val_labels = _prepare_split(
-        tokenizer_model, mean, std, val_paths, window, vocab, use_vision, vision_encoder, camera_key
+        tokenizer_model, mean, std, val_paths, window, vocab, use_vision, vision_encoder, camera_key, device
     )
 
     fusion = None
@@ -115,12 +116,12 @@ def run_training(
             optimizer.step()
 
     model.eval()
-    f1_scores = []
+    pred_gt_pairs = []
     with torch.no_grad():
         for i, labels in enumerate(val_labels):
             x = build_input(val_seqs[i], val_vision[i] if use_vision else None)
             pred = model(x)[-1].argmax(dim=1).squeeze(0).cpu().numpy()
-            f1_scores.append(f1_at_k(pred, labels))
+            pred_gt_pairs.append((pred, labels))
 
-    val_f1 = float(np.mean(f1_scores)) if f1_scores else 0.0
+    val_f1 = f1_at_k_corpus(pred_gt_pairs)
     return {"model": model, "fusion": fusion, "vocab": vocab, "val_f1": val_f1}
