@@ -105,6 +105,9 @@ video (.h5, same file) --nearest frame--> DINOv2 --> vision feature -+--concat+p
 - `compare.py` — runs both modes back to back and prints the F1@50 delta. This is the
   actual go/no-go deliverable.
 
+See `docs/issues-and-fixes.md` for what was wrong with each part of the pipeline, what
+was done about it, and why that solution rather than another.
+
 See `docs/hyperparameters.md` for every hyperparameter, where it is set, and which ones
 are worth changing.
 
