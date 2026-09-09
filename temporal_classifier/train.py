@@ -37,6 +37,7 @@ def _prepare_split(
     vision_encoder=None,
     camera_key: str = "hama1",
     device: str = "cuda",
+    vision_cache_dir: str | None = None,
 ):
     sequences, vision_seqs, label_seqs = [], [], []
     for path in demo_paths:
@@ -45,7 +46,12 @@ def _prepare_split(
         sequences.append(embeddings)
         label_seqs.append(labels)
         if use_vision:
-            vision_seqs.append(extract_frame_features(path, centers, vision_encoder, camera_key, device=device))
+            vision_seqs.append(
+                extract_frame_features(
+                    path, centers, vision_encoder, camera_key, device=device,
+                    cache_dir=vision_cache_dir,
+                )
+            )
     return sequences, vision_seqs, label_seqs
 
 
@@ -64,6 +70,7 @@ def run_training(
     vision_encoder=None,
     camera_key: str = "hama1",
     fusion_out_dim: int = 128,
+    vision_cache_dir: str | None = None,
 ) -> dict:
     if device == "cpu":
         # See tokenizer/train.py: default CPU intra-op thread pool causes ~140x overhead on
@@ -81,10 +88,12 @@ def run_training(
         vocab = build_vocab(all_segments)
 
     train_seqs, train_vision, train_labels = _prepare_split(
-        tokenizer_model, mean, std, train_paths, window, vocab, use_vision, vision_encoder, camera_key, device
+        tokenizer_model, mean, std, train_paths, window, vocab, use_vision, vision_encoder,
+        camera_key, device, vision_cache_dir,
     )
     val_seqs, val_vision, val_labels = _prepare_split(
-        tokenizer_model, mean, std, val_paths, window, vocab, use_vision, vision_encoder, camera_key, device
+        tokenizer_model, mean, std, val_paths, window, vocab, use_vision, vision_encoder,
+        camera_key, device, vision_cache_dir,
     )
 
     fusion = None

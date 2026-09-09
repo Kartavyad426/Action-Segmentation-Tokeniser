@@ -109,16 +109,37 @@ absorb a constant input direction, so this costs conditioning rather than correc
 the vision arm still underperforms, per-dimension standardization computed over the training
 frames is the next escalation.
 
-🔴 **No caching of vision features, unbounded RAM per demo.** `_extract_frames` in
-`enrichment/vision_features.py` decodes and holds every requested video frame in memory
-before running any of them through DINOv2 — measured ~3.5GB for a single demo's worth of
-tokens (3,814 tokens on one real demo). The spec explicitly calls vision extraction "frozen,
-one-time, cacheable," but nothing is cached; every `run_training(use_vision=True)` call
-re-extracts and re-encodes every frame from scratch. Not a correctness bug today (it ran
-successfully in testing) but a real ceiling once the full 148-demo set trains for real —
-longer demos could exhaust RAM, and repeated runs waste significant GPU time re-encoding
-identical frames. Needs streaming (decode -> encode -> discard) and batched encoder calls
-before the real benchmark run, plus a disk cache keyed by (demo, camera, window config).
+🟢 ~~**No caching of vision features, unbounded RAM per demo.**~~ **Fixed.**
+`_extract_frames` decoded and held every requested video frame in memory before running any
+of them through DINOv2, so peak RAM scaled with demo length rather than with anything
+bounded. The spec calls vision extraction "frozen, one-time, cacheable"; nothing was cached,
+and every `run_training(use_vision=True)` call re-decoded and re-encoded every frame.
+
+Three changes, all in `enrichment/vision_features.py`:
+
+- **Streaming.** `_iter_wanted_frames` is a generator that decodes lazily, yields each wanted
+  frame, and stops as soon as the last one has been seen. Frames are preprocessed into a
+  batch buffer and discarded; nothing accumulates.
+- **Batched encoding.** The encoder is called once per batch (default 32) instead of once per
+  frame — `ceil(n/32)` calls rather than `n`.
+- **Disk cache.** `cache_dir` persists the feature array, keyed on demo stem + camera +
+  a hash of the exact frame-index list. The frame-index key matters: a change to the window
+  config moves every token center, and that must miss the cache rather than silently serve
+  features aligned to the old grid. Threaded through as
+  `run_training(vision_cache_dir=...)`; `compare.py` uses `vision_cache/`.
+
+Measured peak RSS on `2025-01-09-13-57-17.h5` (480x640x3 frames, 0.88 MB each), same frame
+set both ways:
+
+| frames requested | before (decode-all-then-encode) | after (stream + batch) |
+|---|---|---|
+| 300 | — | +82.9 MB |
+| 600 | +567.8 MB | +84.9 MB |
+| 1200 | — | +85.8 MB |
+
+The after-column is flat: peak is O(batch size), not O(demo length). The before-column
+extrapolates to 3,814 tokens x 0.88 MB = **3.35 GB**, which independently corroborates the
+~3.5 GB originally measured during review. On a cache hit the encoder is not touched at all.
 
 🔴 **`boundary_alignment_score` has no chance-baseline or precision term.** It currently
 measures only "fraction of ground-truth boundaries with *some* nearby token change" — pure

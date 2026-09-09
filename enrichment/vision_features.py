@@ -1,6 +1,14 @@
-"""Frozen DINOv2 vision features, time-aligned to REASSEMBLE video frames."""
+"""Frozen DINOv2 vision features, time-aligned to REASSEMBLE video frames.
 
+Extraction is frozen and one-time, so it streams and caches: frames are decoded one at a
+time, encoded in batches, and discarded, and the resulting features are optionally persisted
+to disk so repeated `run_training(use_vision=True)` calls never re-encode the same frames.
+"""
+
+import hashlib
 import tempfile
+from contextlib import contextmanager
+from pathlib import Path
 
 import cv2
 import h5py
@@ -21,27 +29,49 @@ def load_vision_encoder(device: str = "cuda"):
     return model
 
 
-def _extract_frames(h5_path: str, camera_key: str, frame_indices: list[int]) -> dict[int, np.ndarray]:
-    with h5py.File(h5_path, "r") as f:
-        video_bytes = f[camera_key][()].tobytes()
-
-    frames = {}
-    wanted = set(frame_indices)
-    with tempfile.NamedTemporaryFile(suffix=".mp4") as tmp:
-        tmp.write(video_bytes)
-        tmp.flush()
-        cap = cv2.VideoCapture(tmp.name)
-        idx = 0
-        while cap.isOpened() and wanted:
+def _iter_wanted_frames(video_path: str, wanted: set[int]):
+    """Yields (index, RGB frame) for each wanted frame, decoding lazily and stopping as
+    soon as the last wanted frame has been seen."""
+    remaining = set(wanted)
+    cap = cv2.VideoCapture(video_path)
+    idx = 0
+    try:
+        while remaining:
             ok, frame = cap.read()
             if not ok:
                 break
-            if idx in wanted:
-                frames[idx] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                wanted.discard(idx)
+            if idx in remaining:
+                remaining.discard(idx)
+                yield idx, cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             idx += 1
+    finally:
         cap.release()
-    return frames
+
+
+@contextmanager
+def _video_file(h5_path: str, camera_key: str):
+    """Materializes the demo's encoded video to a temp file. Only the compressed bytes are
+    held, never the decoded frames."""
+    with h5py.File(h5_path, "r") as f:
+        video_bytes = f[camera_key][()].tobytes()
+    with tempfile.NamedTemporaryFile(suffix=".mp4") as tmp:
+        tmp.write(video_bytes)
+        tmp.flush()
+        del video_bytes
+        yield tmp.name
+
+
+def _cache_path(cache_dir: str, h5_path: str, camera_key: str, frame_indices: list[int]) -> Path:
+    """Keyed on the demo, the camera, and the exact set of frames requested -- so a change
+    to the window config (which moves every token center) misses the cache rather than
+    silently serving features aligned to the old grid."""
+    key = hashlib.sha256(np.asarray(frame_indices, dtype=np.int64).tobytes()).hexdigest()[:16]
+    return Path(cache_dir) / f"{Path(h5_path).stem}.{camera_key}.{key}.npy"
+
+
+def _encode_batch(batch: list[np.ndarray], encoder, device: str) -> np.ndarray:
+    tensor = torch.from_numpy(np.stack(batch, axis=0)).permute(0, 3, 1, 2).float()
+    return np.asarray(encoder(tensor.to(device)).cpu())
 
 
 def _preprocess_for_dinov2(img: np.ndarray, resize_short: int = 256, crop: int = 224) -> np.ndarray:
@@ -64,18 +94,46 @@ def _preprocess_for_dinov2(img: np.ndarray, resize_short: int = 256, crop: int =
 
 @torch.no_grad()
 def extract_frame_features(
-    h5_path: str, frame_times: np.ndarray, encoder, camera_key: str = "hama1", device: str = "cuda"
+    h5_path: str,
+    frame_times: np.ndarray,
+    encoder,
+    camera_key: str = "hama1",
+    device: str = "cuda",
+    batch_size: int = 32,
+    cache_dir: str | None = None,
 ) -> np.ndarray:
     with h5py.File(h5_path, "r") as f:
         cam_ts = f[f"timestamps/{camera_key}"][:]
 
     frame_indices = [int(np.argmin(np.abs(cam_ts - t))) for t in frame_times]
-    frames = _extract_frames(h5_path, camera_key, frame_indices)
 
-    features = []
-    for idx in frame_indices:
-        img = _preprocess_for_dinov2(frames[idx])
-        tensor = torch.from_numpy(img).permute(2, 0, 1).float().unsqueeze(0)
-        feat = encoder(tensor.to(device))
-        features.append(feat.squeeze(0).cpu().numpy())
-    return np.stack(features, axis=0)
+    cache_file = _cache_path(cache_dir, h5_path, camera_key, frame_indices) if cache_dir else None
+    if cache_file is not None and cache_file.exists():
+        return np.load(cache_file)
+
+    by_index: dict[int, np.ndarray] = {}
+    batch: list[np.ndarray] = []
+    batch_indices: list[int] = []
+
+    def flush():
+        if not batch:
+            return
+        for i, feat in zip(batch_indices, _encode_batch(batch, encoder, device)):
+            by_index[i] = feat
+        batch.clear()
+        batch_indices.clear()
+
+    with _video_file(h5_path, camera_key) as video_path:
+        for idx, frame in _iter_wanted_frames(video_path, set(frame_indices)):
+            batch.append(_preprocess_for_dinov2(frame))
+            batch_indices.append(idx)
+            if len(batch) == batch_size:
+                flush()
+        flush()
+
+    features = np.stack([by_index[i] for i in frame_indices], axis=0)
+
+    if cache_file is not None:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        np.save(cache_file, features)
+    return features

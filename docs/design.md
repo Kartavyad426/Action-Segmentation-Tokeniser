@@ -60,6 +60,14 @@ video (.h5, same file) --nearest frame--> DINOv2 --> vision feature -+--concat+p
   video frame nearest each token's center timestamp. Preprocessing: resize-shortest-side +
   center-crop to 224x224, ImageNet mean/std normalization (fixed after final review found
   the original implementation squashed aspect ratio and skipped normalization entirely).
+  - Extraction streams: frames are decoded one at a time, preprocessed into a batch buffer,
+    encoded in batches of 32, and discarded. Peak RAM is O(batch size), not O(demo length)
+    — measured flat at ~85 MB from 300 to 1200 frames, against ~568 MB at 600 frames for the
+    original decode-everything-first approach.
+  - `cache_dir` persists features to disk, keyed on demo + camera + a hash of the exact
+    frame indices requested, so a window-config change misses the cache rather than serving
+    features aligned to the old token grid. Wired through `run_training(vision_cache_dir=)`
+    and used by `compare.py`.
 - `fuse.py` — `ConcatProjectFusion`: LayerNorms the 32-dim motion embedding and the 384-dim
   vision feature **separately**, concatenates them, and projects to `out_dim` (default 128)
   via one learned linear layer. This projection trains jointly with the classifier — it's

@@ -1,4 +1,5 @@
 import os
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -7,6 +8,7 @@ import torch
 from enrichment.fuse import ConcatProjectFusion
 from enrichment.vision_features import (
     VISION_FEATURE_DIM,
+    _iter_wanted_frames,
     _preprocess_for_dinov2,
     extract_frame_features,
     load_vision_encoder,
@@ -171,3 +173,142 @@ def test_fusion_out_dim_is_settable():
 
     assert fusion.out_dim == 64
     assert fusion(torch.randn(5, 32), torch.randn(5, 384)).shape == (5, 64)
+
+
+class _CountingCapture:
+    """Stand-in for cv2.VideoCapture that records how many frames were decoded."""
+
+    def __init__(self, n_frames: int = 200):
+        self.reads = 0
+        self.n_frames = n_frames
+
+    def isOpened(self):
+        return True
+
+    def read(self):
+        if self.reads >= self.n_frames:
+            return False, None
+        self.reads += 1
+        return True, np.zeros((64, 64, 3), dtype=np.uint8)
+
+    def release(self):
+        pass
+
+
+class _CountingEncoder:
+    """Stand-in for DINOv2 that records the batch size of every call."""
+
+    def __init__(self):
+        self.batch_sizes = []
+
+    def __call__(self, tensor):
+        self.batch_sizes.append(tensor.shape[0])
+        return torch.zeros(tensor.shape[0], VISION_FEATURE_DIM)
+
+    @property
+    def calls(self):
+        return len(self.batch_sizes)
+
+
+def test_iter_wanted_frames_yields_before_decoding_the_whole_video():
+    # The original implementation decoded every wanted frame into a dict before returning
+    # anything -- measured ~3.5GB for one demo's worth of tokens. Streaming means the first
+    # frame comes back after decoding exactly one frame, so peak memory is bounded by the
+    # batch, not by the demo length.
+    cap = _CountingCapture(n_frames=200)
+
+    with patch("enrichment.vision_features.cv2.VideoCapture", return_value=cap):
+        gen = _iter_wanted_frames("ignored.mp4", {0, 199})
+        idx, frame = next(gen)
+
+    assert idx == 0
+    assert cap.reads == 1, f"decoded {cap.reads} frames before yielding the first one"
+
+
+def test_iter_wanted_frames_stops_once_every_wanted_frame_is_seen():
+    cap = _CountingCapture(n_frames=200)
+
+    with patch("enrichment.vision_features.cv2.VideoCapture", return_value=cap):
+        got = list(_iter_wanted_frames("ignored.mp4", {0, 4}))
+
+    assert [idx for idx, _ in got] == [0, 4]
+    assert cap.reads == 5, "kept decoding past the last wanted frame"
+
+
+@requires_demo
+def test_extract_frame_features_encodes_in_batches(tmp_path):
+    # One encoder call per frame wastes GPU time; batching is what makes the full 148-demo
+    # run affordable.
+    encoder = _CountingEncoder()
+    frame_times = np.linspace(1736427440.0, 1736427460.0, 10)
+
+    features = extract_frame_features(
+        DEMO_PATH, frame_times, encoder, device="cpu", batch_size=4
+    )
+
+    assert features.shape == (10, VISION_FEATURE_DIM)
+    assert encoder.batch_sizes == [4, 4, 2], f"expected batches of 4, got {encoder.batch_sizes}"
+
+
+@requires_demo
+def test_extract_frame_features_reuses_a_disk_cache_instead_of_re_encoding(tmp_path):
+    # The spec calls vision extraction "frozen, one-time, cacheable" but every
+    # run_training(use_vision=True) re-decoded and re-encoded every frame from scratch.
+    frame_times = np.linspace(1736427440.0, 1736427460.0, 6)
+
+    first_encoder = _CountingEncoder()
+    first = extract_frame_features(
+        DEMO_PATH, frame_times, first_encoder, device="cpu", cache_dir=str(tmp_path)
+    )
+
+    second_encoder = _CountingEncoder()
+    second = extract_frame_features(
+        DEMO_PATH, frame_times, second_encoder, device="cpu", cache_dir=str(tmp_path)
+    )
+
+    assert first_encoder.calls > 0
+    assert second_encoder.calls == 0, "cache hit should not touch the encoder at all"
+    assert np.array_equal(first, second)
+
+
+@requires_demo
+def test_vision_cache_distinguishes_different_frame_requests(tmp_path):
+    # A cache keyed only on the demo would serve stale features after a window-config change.
+    encoder = _CountingEncoder()
+    extract_frame_features(
+        DEMO_PATH, np.linspace(1736427440.0, 1736427450.0, 4), encoder,
+        device="cpu", cache_dir=str(tmp_path),
+    )
+    calls_after_first = encoder.calls
+
+    extract_frame_features(
+        DEMO_PATH, np.linspace(1736427450.0, 1736427460.0, 4), encoder,
+        device="cpu", cache_dir=str(tmp_path),
+    )
+
+    assert encoder.calls > calls_after_first, "different frame times must miss the cache"
+
+
+@requires_demo
+def test_extract_frame_features_handles_a_frame_count_that_divides_evenly_by_the_batch():
+    # The trailing partial batch is the common case; an exact multiple leaves an empty
+    # buffer at the end and must not attempt to encode it.
+    encoder = _CountingEncoder()
+    frame_times = np.linspace(1736427440.0, 1736427460.0, 8)
+
+    features = extract_frame_features(DEMO_PATH, frame_times, encoder, device="cpu", batch_size=4)
+
+    assert features.shape == (8, VISION_FEATURE_DIM)
+    assert encoder.batch_sizes == [4, 4]
+
+
+@requires_demo
+def test_extract_frame_features_handles_repeated_frame_requests():
+    # Two token centers can land on the same video frame; the frame is encoded once but
+    # must still appear at both output positions.
+    encoder = _CountingEncoder()
+    t = 1736427440.0
+    features = extract_frame_features(DEMO_PATH, np.array([t, t, t]), encoder, device="cpu")
+
+    assert features.shape == (3, VISION_FEATURE_DIM)
+    assert encoder.batch_sizes == [1], "the same frame should only be encoded once"

@@ -36,6 +36,7 @@ def main():
         device="cuda",
         use_vision=True,
         vision_encoder=vision_encoder,
+        vision_cache_dir="vision_cache",
     )
 
     print(format_comparison(telemetry_only["val_f1"], vision_enriched["val_f1"]))

@@ -33,7 +33,8 @@ def test_run_training_produces_a_val_f1_score(tmp_path):
     assert "background" in result["vocab"]
 
 
-def _fake_extract_frame_features(h5_path, frame_times, encoder, camera_key="hama1", device="cuda"):
+def _fake_extract_frame_features(h5_path, frame_times, encoder, camera_key="hama1", device="cuda",
+                                 batch_size=32, cache_dir=None):
     # run_training(..., device="cpu") below must thread that device all the way through
     # to this call. If it silently falls back to the "cuda" default (Finding 1's bug),
     # catch it here instead of only in a real GPU/CPU tensor-mismatch crash.
@@ -120,3 +121,32 @@ def test_telemetry_only_classifier_still_takes_the_tokenizer_latent_dim(tmp_path
     assert result["fusion"] is None
     assert result["model"].stage1.in_conv.in_channels == 32
     assert ckpt_info is not None
+
+
+@requires_data
+def test_run_training_threads_the_vision_cache_dir_through_to_extraction(tmp_path):
+    # Without this, run_training(use_vision=True) re-decodes and re-encodes every frame on
+    # every call, which is the whole cost the cache exists to remove.
+    seen = {}
+
+    def _capturing_extract(h5_path, frame_times, encoder, camera_key="hama1", device="cuda",
+                           batch_size=32, cache_dir=None):
+        seen["cache_dir"] = cache_dir
+        return np.zeros((len(frame_times), VISION_FEATURE_DIM), dtype=np.float32)
+
+    train_paths, val_paths = split_available_demos()
+    all_paths = (train_paths + val_paths)[:4]
+    train_subset, val_subset = all_paths[:-1], all_paths[-1:]
+
+    tokenizer_ckpt = str(tmp_path / "tokenizer.pt")
+    train_tokenizer(train_subset, tokenizer_ckpt, epochs=1, batch_size=8, device="cpu")
+
+    cache_dir = str(tmp_path / "vision_cache")
+    with patch("temporal_classifier.train.extract_frame_features", side_effect=_capturing_extract):
+        run_training(
+            tokenizer_ckpt, train_subset, val_subset, epochs=1, channels=8, num_layers=2,
+            num_stages=2, device="cpu", use_vision=True, vision_encoder=object(),
+            vision_cache_dir=cache_dir,
+        )
+
+    assert seen["cache_dir"] == cache_dir
