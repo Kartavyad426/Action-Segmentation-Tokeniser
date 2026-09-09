@@ -105,6 +105,9 @@ video (.h5, same file) --nearest frame--> DINOv2 --> vision feature -+--concat+p
 - `compare.py` — runs both modes back to back and prints the F1@50 delta. This is the
   actual go/no-go deliverable.
 
+See `docs/hyperparameters.md` for every hyperparameter, where it is set, and which ones
+are worth changing.
+
 ## Key implementation decisions and why
 
 - **100Hz resampling grid, not the originally-assumed ~20Hz.** Real REASSEMBLE telemetry
