@@ -141,16 +141,33 @@ The after-column is flat: peak is O(batch size), not O(demo length). The before-
 extrapolates to 3,814 tokens x 0.88 MB = **3.35 GB**, which independently corroborates the
 ~3.5 GB originally measured during review. On a cache hit the encoder is not touched at all.
 
-🔴 **`boundary_alignment_score` has no chance-baseline or precision term.** It currently
-measures only "fraction of ground-truth boundaries with *some* nearby token change" — pure
-recall, no penalty for a tokenizer that changes token on every single window (which would
-score a perfect 1.0 despite being useless). Measured on real data with a lightly-trained
-tokenizer: score 0.371, but the token-change rate was high enough that the chance-level
-score for random boundary placement is ~0.40 — i.e., the measured score was *at or below
-chance*, and the function has no way to report that. This is one of the spec's three
-tokenizer-quality gating checks; as built, it can't actually gate anything. Needs a
-chance-baseline comparison and a within-segment token-stability (purity) term, which the
-spec asked for but wasn't implemented.
+🟢 ~~**`boundary_alignment_score` has no chance-baseline or precision term.**~~ **Fixed.**
+It measured only "fraction of ground-truth boundaries with *some* nearby token change" —
+pure recall, with no penalty for a tokenizer that changes token on every single window
+(which scored a perfect 1.0 despite being useless). Measured on real data with a
+lightly-trained tokenizer: score 0.371, while the chance-level score for random boundary
+placement at that token-change rate was ~0.40 — the measured score was *at or below chance*
+and the function had no way to say so.
+
+`boundary_alignment_report` now returns `change_precision` (of the changes the tokenizer
+made, how many landed near a real boundary — this is what punishes changing constantly),
+`chance_recall` and `lift_over_chance` (the recall the same *number* of changes would get if
+scattered uniformly at random, so the score can be read against its own null), and
+`segment_purity` (within a ground-truth segment, the fraction of tokens holding that
+segment's most common code). `f1`, the harmonic mean of recall and precision, is the number
+worth gating on.
+
+The scoring math is now a pure function of `(indices, centers, segments)`, separate from the
+model, so the degenerate cases can be tested directly rather than only observed on real data:
+
+| tokenizer behaviour | recall | chance | lift | precision | f1 | purity |
+|---|---|---|---|---|---|---|
+| changes every window | 1.00 | 0.93 | +0.07 | 0.06 | 0.11 | 0.05 |
+| changes half the time | 1.00 | 0.74 | +0.26 | 0.04 | 0.08 | 0.10 |
+| changes at boundaries only | 0.50 | 0.03 | +0.47 | 1.00 | 0.67 | 1.00 |
+
+The old metric returned 1.00 for the first two rows. Note the return type changed from
+`float` to `dict`.
 
 🔴 **The tokenizer's own gating checks are never run before classifier training.**
 `tokenizer/evaluate.py`'s three checks (reconstruction error, codebook utilization,

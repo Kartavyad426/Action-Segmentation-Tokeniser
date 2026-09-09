@@ -1,7 +1,12 @@
 import numpy as np
 import torch
 
-from tokenizer.evaluate import boundary_alignment_score, codebook_utilization, reconstruction_error
+from tokenizer.evaluate import (
+    boundary_alignment_report,
+    boundary_alignment_score,
+    codebook_utilization,
+    reconstruction_error,
+)
 from tokenizer.model import MotionTokenizer
 from tokenizer.windowing import WindowedTelemetryDataset
 
@@ -51,6 +56,90 @@ def test_boundary_alignment_score_is_one_when_token_changes_at_every_boundary():
     grid = np.arange(30) * 0.01
     segments = [(0.0, 0.1, "A"), (0.1, 0.2, "B"), (0.2, 0.3, "C")]
 
-    score = boundary_alignment_score(model, telemetry, grid, segments, window=10, tolerance_s=0.05)
+    report = boundary_alignment_score(model, telemetry, grid, segments, window=10, tolerance_s=0.05)
 
-    assert 0.0 <= score <= 1.0
+    for key in ("boundary_recall", "change_precision", "f1", "chance_recall", "segment_purity"):
+        assert 0.0 <= report[key] <= 1.0
+
+
+def _centers(n, dt=0.15):
+    return np.arange(n) * dt
+
+
+def test_a_tokenizer_that_changes_every_token_scores_at_chance():
+    # THE failure the old pure-recall score could not report: a tokenizer that emits a
+    # different code every single window hits every boundary by accident and scored a
+    # perfect 1.0 despite being useless.
+    n = 200
+    indices = np.arange(n)  # changes at every step
+    segments = [(3.0, 6.0, "A"), (6.0, 9.0, "B"), (9.0, 12.0, "C")]
+
+    report = boundary_alignment_report(indices, _centers(n), segments, tolerance_s=0.2)
+
+    assert report["boundary_recall"] > 0.9, "recall alone still looks perfect"
+    assert report["chance_recall"] > 0.9, "and the metric now says why: chance alone explains it"
+    assert report["lift_over_chance"] < 0.1, "so the placement carries almost no information"
+    assert report["change_precision"] < 0.1
+    assert report["f1"] < 0.2
+
+
+def test_changes_placed_exactly_on_boundaries_beat_chance():
+    n = 200
+    centers = _centers(n)
+    segments = [(3.0, 6.0, "A"), (6.0, 9.0, "B"), (9.0, 12.0, "C")]
+    boundaries = [3.0, 6.0, 9.0, 12.0]
+
+    indices = np.zeros(n, dtype=int)
+    for i, b in enumerate(boundaries, start=1):
+        indices[centers >= b] = i
+
+    report = boundary_alignment_report(indices, centers, segments, tolerance_s=0.2)
+
+    assert report["boundary_recall"] == 1.0
+    assert report["change_precision"] == 1.0
+    assert report["lift_over_chance"] > 0.9
+    assert report["f1"] == 1.0
+
+
+def test_segment_purity_separates_a_stable_tokenizer_from_a_flickering_one():
+    n = 200
+    centers = _centers(n)
+    segments = [(3.0, 6.0, "A"), (6.0, 9.0, "B")]
+
+    stable = np.zeros(n, dtype=int)
+    stable[centers >= 6.0] = 1
+    flicker = np.arange(n) % 7
+
+    assert boundary_alignment_report(stable, centers, segments)["segment_purity"] == 1.0
+    assert boundary_alignment_report(flicker, centers, segments)["segment_purity"] < 0.4
+
+
+def test_chance_baseline_rises_with_the_token_change_rate():
+    n = 200
+    centers = _centers(n)
+    segments = [(3.0, 6.0, "A"), (6.0, 9.0, "B")]
+
+    few = np.zeros(n, dtype=int)
+    few[centers >= 6.0] = 1
+    many = np.arange(n)
+
+    assert (
+        boundary_alignment_report(many, centers, segments)["chance_recall"]
+        > boundary_alignment_report(few, centers, segments)["chance_recall"]
+    )
+
+
+def test_report_is_all_zeros_when_there_are_no_token_changes():
+    n = 50
+    report = boundary_alignment_report(np.zeros(n, dtype=int), _centers(n), [(1.0, 2.0, "A")])
+
+    assert report["boundary_recall"] == 0.0
+    assert report["change_precision"] == 0.0
+    assert report["f1"] == 0.0
+
+
+def test_report_is_all_zeros_when_the_demo_has_no_labeled_segments():
+    n = 50
+    report = boundary_alignment_report(np.arange(n), _centers(n), [])
+
+    assert report["f1"] == 0.0
