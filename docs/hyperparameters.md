@@ -109,26 +109,30 @@ Measured low-level label counts across the demos on disk:
 
 Plus `background`, which is class 0. **10 classes total.**
 
-Token-level distribution, measured through `align_labels_to_grid` on a 12-demo sample per
-split (this is what the classifier actually sees, and it differs from the segment counts
-above because segments have very different durations):
+Token-level distribution, measured through `align_labels_to_grid` across **all 148 demos**
+(this is what the classifier actually sees, and it differs from the segment counts above
+because segment durations vary hugely — `Release` has 1,134 train segments but only 3.7% of
+tokens, while `Grasp` has 1,420 and 36.2%):
 
 | label | train | val | test |
 |---|---|---|---|
-| background | 1.8% | 1.9% | 3.4% |
-| Align | 12.6% | 18.8% | 11.5% |
-| Approach | 29.8% | 27.2% | 25.9% |
-| Grasp | 36.5% | 33.3% | 37.4% |
-| Lift | 3.1% | 3.0% | 2.3% |
-| Nudge | 1.1% | 1.1% | 0.9% |
-| Pull | 4.5% | 3.2% | 9.2% |
-| Push | 2.7% | 4.1% | 2.4% |
-| Release | 3.4% | 3.1% | 4.1% |
-| Twist | 4.5% | 4.2% | 2.9% |
+| background | 2.04% | 1.90% | 2.30% |
+| Align | 13.40% | 18.35% | 13.41% |
+| Approach | 28.61% | 28.18% | 26.83% |
+| Grasp | 36.15% | 33.32% | 37.32% |
+| Lift | 2.34% | 2.76% | 2.04% |
+| Nudge | 0.88% | 0.89% | 0.46% |
+| Pull | 5.79% | 3.30% | 7.88% |
+| Push | 3.14% | 3.99% | 2.69% |
+| Release | 3.67% | 3.03% | 3.72% |
+| Twist | 3.97% | 4.29% | 3.35% |
+| **total tokens** | **198,964** | **47,710** | **71,474** |
 
-**Background is 1.8%, not dominant.** An earlier note recorded ~46%, taken from a single
-demo; it does not hold at corpus level. The real imbalance is **33:1 between action
-classes** — Grasp vs Nudge.
+Every class appears in every split.
+
+**Background is 2.04%, not dominant.** An earlier note recorded ~46%, taken from a single
+demo; it does not hold at corpus level. The real imbalance is **41:1 between action
+classes** — Grasp (36.15%) vs Nudge (0.88%).
 
 Note also that the splits are not distributionally identical (`Align` 12.6% train vs 18.8%
 val; `Pull` 4.5% train vs 9.2% test), so validation is good for ranking configurations but
@@ -144,7 +148,7 @@ Three things to know before spending effort here:
 
 1. **Background is already excluded from the metric.** `metrics.py:20-21` drops
    `background_label=0` segments from both prediction and ground truth before matching. So
-   background does not directly cost F1@50 — and at a measured 1.8% of tokens it is not the
+   background does not directly cost F1@50 — and at a measured 2.04% of tokens it is not the
    problem it was assumed to be anyway. It costs only indirectly: a model that over-predicts
    background loses real segments as false negatives.
 2. **The real imbalance is between action classes** — `Nudge` at 55 vs `Grasp` at 1,598 is

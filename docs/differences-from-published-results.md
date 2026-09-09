@@ -233,15 +233,16 @@ rather than being excluded.
 measurement:** an earlier note here recorded background as "the dominant class in real data
 (~46% of tokens on one demo)". That figure came from a single demo and does not hold at
 corpus level. Measured across the finished 148-demo download, token-level via
-`align_labels_to_grid` on a 12-demo sample per split, background is **1.8% of train tokens**
-— the corpus is almost entirely labeled. The real imbalance is between *action* classes:
-**33:1, Grasp (36.5%) vs Nudge (1.1%)**. Since `f1_at_k` already excludes background segments
+`align_labels_to_grid` across all 148 demos, background is **2.04% of train tokens** — the
+corpus is almost entirely labeled. The real imbalance is between *action* classes:
+**41:1, Grasp (36.15%) vs Nudge (0.88%)**. Since `f1_at_k` already excludes background segments
 from both sides, background is close to a non-issue; whether the tail classes (Nudge, Push,
 Lift) are actually being missed is the open question, and needs per-class F1 on validation
 before any weighting is applied. See `docs/hyperparameters.md`.
 
-🟡 **The three splits are not distributionally identical.** Measured token-level: `Align` is
-12.6% of train but 18.8% of val; `Pull` is 4.5% of train but 9.2% of test. Validation F1@50
+🟡 **The three splits are not distributionally identical.** Measured token-level across all 148
+demos: `Align` is 13.40% of train but 18.35% of val; `Pull` is 5.79% of train but 7.88% of
+test, and `Nudge` is 0.88% of train but 0.46% of test. Validation F1@50
 may therefore differ systematically from test F1@50 for reasons unrelated to the model, so
 val is usable for *ranking* configurations but its absolute number should not be quoted as a
 test estimate.
