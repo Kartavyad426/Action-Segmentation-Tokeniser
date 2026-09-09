@@ -3,6 +3,8 @@ import torch
 
 from tokenizer.evaluate import (
     boundary_alignment_report,
+    check_tokenizer_gates,
+    evaluate_tokenizer,
     boundary_alignment_score,
     codebook_utilization,
     reconstruction_error,
@@ -143,3 +145,99 @@ def test_report_is_all_zeros_when_the_demo_has_no_labeled_segments():
     report = boundary_alignment_report(np.arange(n), _centers(n), [])
 
     assert report["f1"] == 0.0
+
+
+def _healthy_report():
+    return {
+        "reconstruction_error": 0.08,
+        "codebook_utilization": 0.72,
+        "effective_codes": 120.0,
+        "boundary": {"f1": 0.55, "lift_over_chance": 0.31, "segment_purity": 0.8},
+    }
+
+
+def test_gate_passes_a_healthy_tokenizer():
+    assert check_tokenizer_gates(_healthy_report()) == []
+
+
+def test_gate_fails_the_codebook_collapse_measured_during_review():
+    # 0.235 utilization, ~9 live codes out of 512. This is the failure the pipeline had no
+    # way to catch before classifier training consumed hours of GPU time.
+    report = _healthy_report() | {"codebook_utilization": 0.235, "effective_codes": 9.0}
+
+    failures = check_tokenizer_gates(report)
+
+    assert len(failures) == 1
+    assert "codebook" in failures[0].lower()
+    assert "0.235" in failures[0] and "9" in failures[0]
+
+
+def test_gate_fails_boundary_alignment_at_or_below_chance_without_needing_a_threshold():
+    # No arbitrary cutoff required: scoring no better than randomly-scattered token changes
+    # is an unambiguous failure on its own terms.
+    report = _healthy_report() | {"boundary": {"f1": 0.4, "lift_over_chance": -0.02, "segment_purity": 0.8}}
+
+    failures = check_tokenizer_gates(report)
+
+    assert len(failures) == 1
+    assert "chance" in failures[0].lower()
+
+
+def test_gate_fails_a_non_finite_reconstruction_error():
+    report = _healthy_report() | {"reconstruction_error": float("nan")}
+
+    failures = check_tokenizer_gates(report)
+
+    assert len(failures) == 1
+    assert "reconstruction" in failures[0].lower()
+
+
+def test_gate_reports_every_independent_failure_not_just_the_first():
+    report = _healthy_report() | {
+        "codebook_utilization": 0.1,
+        "effective_codes": 3.0,
+        "boundary": {"f1": 0.1, "lift_over_chance": -0.05, "segment_purity": 0.1},
+    }
+
+    assert len(check_tokenizer_gates(report)) == 2
+
+
+def test_gate_utilization_threshold_is_overridable():
+    report = _healthy_report() | {"codebook_utilization": 0.4, "effective_codes": 30.0}
+
+    assert check_tokenizer_gates(report) == []
+    assert len(check_tokenizer_gates(report, min_codebook_utilization=0.5)) == 1
+
+
+def _synthetic_demo(seed, n=300):
+    rng = np.random.default_rng(seed)
+    telemetry = rng.standard_normal((n, 3)).astype(np.float32)
+    grid = np.arange(n) * 0.01
+    segments = [(0.5, 1.0, "A"), (1.0, 1.5, "B"), (1.5, 2.0, "C")]
+    return telemetry, grid, segments
+
+
+def test_evaluate_tokenizer_reports_all_three_spec_checks():
+    model = _tiny_model()
+    demos = [_synthetic_demo(i) for i in range(3)]
+
+    report = evaluate_tokenizer(model, num_codes=8, window=10, demos=demos)
+
+    assert set(report) >= {"reconstruction_error", "codebook_utilization", "effective_codes", "boundary"}
+    assert report["reconstruction_error"] >= 0.0
+    assert 0.0 <= report["codebook_utilization"] <= 1.0
+    assert 1.0 <= report["effective_codes"] <= 8.0
+    assert "lift_over_chance" in report["boundary"]
+
+
+def test_evaluate_tokenizer_catches_a_collapsed_codebook_end_to_end():
+    model = _tiny_model()
+    with torch.no_grad():
+        model.quantizer.codebook.weight[:] = 0.0
+        model.quantizer.codebook.weight[0] = 100.0  # every window snaps to code 0
+
+    report = evaluate_tokenizer(model, num_codes=8, window=10, demos=[_synthetic_demo(0)])
+    failures = check_tokenizer_gates(report)
+
+    assert report["effective_codes"] < 1.5
+    assert any("codebook" in f.lower() for f in failures)

@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from tokenizer.windowing import demo_to_sequence
+from tokenizer.windowing import WindowedTelemetryDataset, demo_to_sequence
 
 
 @torch.no_grad()
@@ -124,3 +124,70 @@ def boundary_alignment_score(
     x = torch.from_numpy(windows.astype(np.float32)).to(device)
     _, indices = model.encode_tokens(x)
     return boundary_alignment_report(indices.cpu().numpy(), centers, low_level_segments, tolerance_s)
+
+
+def check_tokenizer_gates(report: dict, min_codebook_utilization: float = 0.35) -> list[str]:
+    """The spec's checks 1-3, as a pass/fail gate on moving to classifier training.
+
+    The spec states these should gate but names no thresholds, so two of the three are made
+    threshold-free and only the third carries a number:
+
+    - Reconstruction error: no principled absolute cutoff exists for normalized telemetry
+      MSE, so only a non-finite value (diverged training) fails. The value is reported for
+      a human to read.
+    - Codebook utilization: the one real threshold. Collapse is the failure mode that
+      reconstructs fine while starving the classifier, so it cannot be caught by check 1.
+    - Boundary alignment: fails when it is at or below its own chance level, which needs no
+      arbitrary cutoff -- token changes no better placed than random ones carry no
+      information about where actions begin and end.
+    """
+    failures = []
+
+    recon = report["reconstruction_error"]
+    if not np.isfinite(recon):
+        failures.append(f"reconstruction error is not finite ({recon}) -- tokenizer training diverged")
+
+    util = report["codebook_utilization"]
+    if util < min_codebook_utilization:
+        failures.append(
+            f"codebook collapse: utilization {util:.3f} < {min_codebook_utilization:.3f} "
+            f"(~{report['effective_codes']:.0f} effective codes) -- the classifier would be "
+            f"starved of discriminative signal"
+        )
+
+    lift = report["boundary"]["lift_over_chance"]
+    if lift <= 0:
+        failures.append(
+            f"boundary alignment is at or below chance (lift {lift:+.3f}) -- token changes "
+            f"are no better placed than random ones"
+        )
+
+    return failures
+
+
+def evaluate_tokenizer(model, num_codes: int, window: int, demos, mean=None, std=None, device: str = "cpu") -> dict:
+    """Run the spec's three tokenizer-only checks over held-out demos.
+
+    `demos` is a list of `(telemetry, grid, low_level_segments)`. The spec asks for these on
+    data the tokenizer never trained on -- reconstruction error on training windows says
+    nothing about whether the codebook captures the real motion distribution.
+    """
+    telemetry_list = [t for t, _, _ in demos]
+    if mean is not None and std is not None:
+        telemetry_list = [(t - mean) / std for t in telemetry_list]
+    dataset = WindowedTelemetryDataset(telemetry_list, window=window, stride=window)
+
+    utilization = codebook_utilization(model, dataset, num_codes, device=device)
+    boundaries = [
+        boundary_alignment_score(model, tel, grid, segs, window=window, device=device)
+        for tel, grid, segs in zip(telemetry_list, [g for _, g, _ in demos], [s for _, _, s in demos])
+    ]
+    keys = ["boundary_recall", "change_precision", "f1", "chance_recall", "lift_over_chance", "segment_purity"]
+
+    return {
+        "reconstruction_error": reconstruction_error(model, dataset, device=device),
+        "codebook_utilization": utilization,
+        "effective_codes": float(num_codes ** utilization),
+        "boundary": {k: float(np.mean([b[k] for b in boundaries])) for k in keys},
+        "n_demos": len(demos),
+    }

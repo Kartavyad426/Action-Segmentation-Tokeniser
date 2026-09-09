@@ -169,15 +169,31 @@ model, so the degenerate cases can be tested directly rather than only observed 
 The old metric returned 1.00 for the first two rows. Note the return type changed from
 `float` to `dict`.
 
-🔴 **The tokenizer's own gating checks are never run before classifier training.**
-`tokenizer/evaluate.py`'s three checks (reconstruction error, codebook utilization,
-boundary alignment) exist and are unit-tested, but `temporal_classifier/compare.py`'s
-`main()` never calls them — it goes straight from `train_tokenizer` to `run_training`. The
-spec is explicit that these checks should *gate* moving on to the classifier. Measured
-directly: a 3-epoch tokenizer trained during review had codebook utilization 0.235, using
-only 9 of 512 codes — a real codebook collapse — and nothing in the current pipeline would
-have caught it before it silently propagated into classifier training. Needs wiring into
-`compare.py` before the real benchmark run.
+🟢 ~~**The tokenizer's own gating checks are never run before classifier training.**~~
+**Fixed.** `tokenizer/evaluate.py`'s three checks existed and were unit-tested, but
+`compare.py`'s `main()` went straight from `train_tokenizer` to `run_training`. Measured
+directly during review: a 3-epoch tokenizer had codebook utilization 0.235, using only 9 of
+512 codes — a real collapse — and nothing in the pipeline would have caught it before it
+silently propagated into hours of classifier training.
+
+`evaluate_tokenizer` now runs all three checks on **held-out** demos (the spec asks for
+held-out; nothing previously evaluated on anything but training data), `check_tokenizer_gates`
+turns the report into pass/fail, and `compare.py` aborts before classifier training if the
+gate fails — `--skip-gates` overrides.
+
+The spec says checks 1-3 should gate but names no thresholds, so two of the three are
+threshold-free rather than inventing numbers:
+
+- **Reconstruction error** — no principled absolute cutoff exists for normalized telemetry
+  MSE, so only a non-finite value (diverged training) fails. The number is printed for a
+  human to read.
+- **Codebook utilization** — the one real threshold, default 0.35 normalized entropy,
+  overridable. Collapse reconstructs fine while starving the classifier, so check 1 cannot
+  catch it. Reported alongside `effective_codes` (`num_codes ** utilization`), which is far
+  more legible than normalized entropy: the review's 0.235 reads as ~9 effective codes.
+- **Boundary alignment** — fails at or below its own chance level, which needs no cutoff:
+  token changes no better placed than random ones carry no information about where actions
+  begin and end.
 
 ## Minor implementation notes (unlikely to affect result validity, tracked for completeness)
 
