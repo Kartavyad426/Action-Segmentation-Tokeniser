@@ -60,10 +60,21 @@ video (.h5, same file) --nearest frame--> DINOv2 --> vision feature -+--concat+p
   video frame nearest each token's center timestamp. Preprocessing: resize-shortest-side +
   center-crop to 224x224, ImageNet mean/std normalization (fixed after final review found
   the original implementation squashed aspect ratio and skipped normalization entirely).
-- `fuse.py` — `ConcatProjectFusion`: concatenates the 32-dim motion embedding with the
-  384-dim vision feature, projects back to 32-dim via one learned linear layer. This
-  projection trains jointly with the classifier — it's the only supervised part of the
-  vision pathway.
+- `fuse.py` — `ConcatProjectFusion`: LayerNorms the 32-dim motion embedding and the 384-dim
+  vision feature **separately**, concatenates them, and projects to `out_dim` (default 128)
+  via one learned linear layer. This projection trains jointly with the classifier — it's
+  the only supervised part of the vision pathway.
+  - The per-branch normalization is load-bearing, not hygiene: `nn.Linear` draws all 416
+    input weights from one distribution, so each branch's contribution to the output scales
+    with its vector norm. Unnormalized, vision entered ~11-26x louder than motion (the exact
+    figure drifted with the tokenizer checkpoint) and swamped the motion signal at init.
+    LayerNorm pins each branch to norm √dim, leaving only the √(384/32) = 3.46x that is pure
+    dimensionality. Normalizing the concatenated 416-dim vector instead would apply one
+    shared scalar to both halves and barely change the ratio — see the differences doc.
+  - `out_dim` is independent of the tokenizer's `latent_dim` (it was previously pinned to
+    it, coupling two unrelated hyperparameters and forcing 416 dims through a 32-dim
+    bottleneck). `MSTCN`'s `in_channels` follows the fusion width on the vision arm and
+    stays at `latent_dim` on the telemetry-only control arm.
 
 ### `temporal_classifier/` — the actual classifier
 

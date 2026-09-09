@@ -63,6 +63,7 @@ def run_training(
     use_vision: bool = False,
     vision_encoder=None,
     camera_key: str = "hama1",
+    fusion_out_dim: int = 128,
 ) -> dict:
     if device == "cpu":
         # See tokenizer/train.py: default CPU intra-op thread pool causes ~140x overhead on
@@ -87,12 +88,16 @@ def run_training(
     )
 
     fusion = None
+    classifier_in_dim = config["latent_dim"]
     if use_vision:
         from enrichment.vision_features import VISION_FEATURE_DIM
 
-        fusion = ConcatProjectFusion(config["latent_dim"], VISION_FEATURE_DIM, config["latent_dim"]).to(device)
+        fusion = ConcatProjectFusion(config["latent_dim"], VISION_FEATURE_DIM, fusion_out_dim).to(device)
+        # Only the vision arm's classifier is resized; the telemetry-only baseline stays on
+        # latent_dim, unchanged, since it is the control arm of the vision ablation.
+        classifier_in_dim = fusion.out_dim
 
-    model = MSTCN(config["latent_dim"], len(vocab), channels, num_layers, num_stages).to(device)
+    model = MSTCN(classifier_in_dim, len(vocab), channels, num_layers, num_stages).to(device)
     params = list(model.parameters()) + (list(fusion.parameters()) if fusion else [])
     optimizer = torch.optim.Adam(params, lr=lr)
     loss_fn = nn.CrossEntropyLoss()

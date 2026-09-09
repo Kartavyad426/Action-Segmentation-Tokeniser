@@ -78,3 +78,45 @@ def test_run_training_with_vision_fusion_completes_on_cpu_and_matches_telemetry_
     assert result["fusion"] is not None
     assert 0.0 <= result["val_f1"] <= 1.0
     assert result["vocab"] == telemetry_only["vocab"]
+
+
+@requires_data
+def test_vision_run_sizes_the_classifier_to_the_fused_width_not_the_tokenizer_latent(tmp_path):
+    # The fusion's out_dim used to be hardcoded to config["latent_dim"], making one
+    # tokenizer hyperparameter silently set the classifier's input width too. Now that
+    # out_dim is independent, MSTCN's in_channels must follow the fusion, not the latent.
+    train_paths, val_paths = split_available_demos()
+    all_paths = (train_paths + val_paths)[:4]
+    train_subset, val_subset = all_paths[:-1], all_paths[-1:]
+
+    tokenizer_ckpt = str(tmp_path / "tokenizer.pt")
+    train_tokenizer(train_subset, tokenizer_ckpt, epochs=1, batch_size=8, device="cpu")
+
+    with patch("temporal_classifier.train.extract_frame_features", side_effect=_fake_extract_frame_features):
+        result = run_training(
+            tokenizer_ckpt, train_subset, val_subset, epochs=1, channels=8, num_layers=2,
+            num_stages=2, device="cpu", use_vision=True, vision_encoder=object(), fusion_out_dim=64,
+        )
+
+    assert result["fusion"].out_dim == 64
+    assert result["model"].stage1.in_conv.in_channels == 64
+
+
+@requires_data
+def test_telemetry_only_classifier_still_takes_the_tokenizer_latent_dim(tmp_path):
+    # The control arm of the ablation must be untouched by any fusion change.
+    train_paths, val_paths = split_available_demos()
+    all_paths = (train_paths + val_paths)[:4]
+    train_subset, val_subset = all_paths[:-1], all_paths[-1:]
+
+    tokenizer_ckpt = str(tmp_path / "tokenizer.pt")
+    ckpt_info = train_tokenizer(train_subset, tokenizer_ckpt, epochs=1, batch_size=8, device="cpu")
+
+    result = run_training(
+        tokenizer_ckpt, train_subset, val_subset, epochs=1, channels=8, num_layers=2,
+        num_stages=2, device="cpu",
+    )
+
+    assert result["fusion"] is None
+    assert result["model"].stage1.in_conv.in_channels == 32
+    assert ckpt_info is not None

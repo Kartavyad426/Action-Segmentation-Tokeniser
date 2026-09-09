@@ -67,17 +67,47 @@ input features bias any vision-vs-no-vision comparison toward "vision doesn't he
 directly undermining the branch's central question. Fixed in
 `enrichment/vision_features.py`'s new `_preprocess_for_dinov2`.
 
-🔴 **Vision/motion embedding scale mismatch in the fusion layer.** Measured on real data
-with a trained tokenizer: motion embedding per-vector norm ~1.83, DINOv2 CLS token norm
-~47.1 (most of the vision vector is a large near-constant offset; the informative signal is
-a small residual on top of it). The `ConcatProjectFusion` layer concatenates these
-mismatched-scale vectors and projects 416-dim -> 32-dim with no normalization step, so at
-initialization the fusion is dominated by the vision branch, and everything gets squeezed
-through an undersized bottleneck. This can bias the measured vision lift in either
-direction unpredictably. **Not yet fixed** — needs `LayerNorm` (or fixed standardization) on
-the vision branch before concatenation, and probably a larger `out_dim` than 32. Must land
-before the real 148-demo benchmark run; the current smoke-tested vision path works
-end-to-end but its *quality* as a measurement is unverified.
+🟢 ~~**Vision/motion embedding scale mismatch in the fusion layer.**~~ **Fixed.**
+`ConcatProjectFusion` concatenated the motion embedding and the DINOv2 CLS token with no
+normalization and projected 416-dim -> 32-dim. Because `nn.Linear` draws all of its input
+weights from one distribution — it cannot know which columns belong to which modality —
+each branch's contribution to the output scales with that branch's vector norm, so the
+input scale gap *was* the branch-dominance gap, at initialization and in the gradients.
+
+Measured before/after, on 200 real tokens from `2025-01-09-13-57-17.h5` with a tokenizer
+trained on 3 real demos and real DINOv2 features:
+
+| | motion norm | vision norm | norm ratio | per-elem RMS ratio | output contribution ratio |
+|---|---|---|---|---|---|
+| before | 4.30 | 46.54 | 10.8x | 3.11x | **11.2x** |
+| after | 5.66 = √32 | 19.60 = √384 | **3.46x** | **1.00x** | **3.62x** |
+
+Note the before-numbers differ from the code reviewer's original measurement (motion norm
+1.83, ratio 25.7x) because the motion norm depends on how the tokenizer happened to train —
+**the imbalance was not a fixed 26x but a quantity that drifts with the tokenizer
+checkpoint**, which is an additional reason normalization was needed: the branch balance was
+not reproducible run to run. After the fix both branch norms are pinned to √dim by
+construction and are identical regardless of tokenizer state.
+
+The fix is `nn.LayerNorm` on **each branch separately, before** the concatenation. Applying
+one `LayerNorm(416)` to the concatenated vector instead divides both halves by the same
+scalar and so barely moves their ratio at all — measured on the test fixture, 25.8x raw
+becomes 24.3x, against 3.46x for per-branch normalization. The per-branch placement is the
+load-bearing part, not the presence of a LayerNorm. The residual 3.46x is exactly √(384/32), pure
+dimensionality, and the learnable affine gains can re-weight from there.
+
+`out_dim` is also no longer pinned to `config["latent_dim"]`; it is an independent
+`run_training(fusion_out_dim=...)` parameter defaulting to 128, and `MSTCN`'s `in_channels`
+follows the fusion width on the vision arm. The telemetry-only control arm is unchanged and
+still built at `latent_dim` — covered by a dedicated regression test.
+
+One thing the fix does **not** do: LayerNorm centers across dims *within* one vector, so it
+rescales but does not remove the component of the DINOv2 feature that is constant *across
+frames* — measured at norm 43.49 of the 46.54 total, i.e. ~87% of the vision vector's
+magnitude is frame-invariant, with a per-frame residual of 16.26. The projection's bias can
+absorb a constant input direction, so this costs conditioning rather than correctness. If
+the vision arm still underperforms, per-dimension standardization computed over the training
+frames is the next escalation.
 
 🔴 **No caching of vision features, unbounded RAM per demo.** `_extract_frames` in
 `enrichment/vision_features.py` decodes and holds every requested video frame in memory
