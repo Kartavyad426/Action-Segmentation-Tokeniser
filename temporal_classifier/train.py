@@ -4,6 +4,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from enrichment.fuse import ConcatProjectFusion
+from enrichment.vision_features import extract_frame_features
 from temporal_classifier.labels import align_labels_to_grid, build_vocab
 from temporal_classifier.metrics import f1_at_k
 from temporal_classifier.model import MSTCN
@@ -24,14 +26,26 @@ def build_demo_sequence(tokenizer_model, mean, std, demo_path: str, window: int)
     return z_q.numpy(), centers, low_level_segments
 
 
-def _prepare_split(tokenizer_model, mean, std, demo_paths: list[str], window: int, vocab: dict[str, int]):
-    sequences, label_seqs = [], []
+def _prepare_split(
+    tokenizer_model,
+    mean,
+    std,
+    demo_paths: list[str],
+    window: int,
+    vocab: dict[str, int],
+    use_vision: bool = False,
+    vision_encoder=None,
+    camera_key: str = "hama1",
+):
+    sequences, vision_seqs, label_seqs = [], [], []
     for path in demo_paths:
         embeddings, centers, segments = build_demo_sequence(tokenizer_model, mean, std, path, window)
         labels = align_labels_to_grid(centers, segments, vocab)
         sequences.append(embeddings)
         label_seqs.append(labels)
-    return sequences, label_seqs
+        if use_vision:
+            vision_seqs.append(extract_frame_features(path, centers, vision_encoder, camera_key))
+    return sequences, vision_seqs, label_seqs
 
 
 def run_training(
@@ -45,6 +59,9 @@ def run_training(
     num_stages: int = 3,
     lr: float = 1e-3,
     device: str = "cuda",
+    use_vision: bool = False,
+    vision_encoder=None,
+    camera_key: str = "hama1",
 ) -> dict:
     if device == "cpu":
         # See tokenizer/train.py: default CPU intra-op thread pool causes ~140x overhead on
@@ -61,17 +78,35 @@ def run_training(
             all_segments.append(segments)
         vocab = build_vocab(all_segments)
 
-    train_seqs, train_labels = _prepare_split(tokenizer_model, mean, std, train_paths, window, vocab)
-    val_seqs, val_labels = _prepare_split(tokenizer_model, mean, std, val_paths, window, vocab)
+    train_seqs, train_vision, train_labels = _prepare_split(
+        tokenizer_model, mean, std, train_paths, window, vocab, use_vision, vision_encoder, camera_key
+    )
+    val_seqs, val_vision, val_labels = _prepare_split(
+        tokenizer_model, mean, std, val_paths, window, vocab, use_vision, vision_encoder, camera_key
+    )
+
+    fusion = None
+    if use_vision:
+        from enrichment.vision_features import VISION_FEATURE_DIM
+
+        fusion = ConcatProjectFusion(config["latent_dim"], VISION_FEATURE_DIM, config["latent_dim"]).to(device)
 
     model = MSTCN(config["latent_dim"], len(vocab), channels, num_layers, num_stages).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    params = list(model.parameters()) + (list(fusion.parameters()) if fusion else [])
+    optimizer = torch.optim.Adam(params, lr=lr)
     loss_fn = nn.CrossEntropyLoss()
+
+    def build_input(embeddings, vision_feats):
+        x = torch.from_numpy(embeddings).to(device)
+        if fusion is not None:
+            v = torch.from_numpy(vision_feats.astype(np.float32)).to(device)
+            x = fusion(x, v)
+        return x.unsqueeze(0)
 
     for _ in range(epochs):
         model.train()
-        for embeddings, labels in zip(train_seqs, train_labels):
-            x = torch.from_numpy(embeddings).unsqueeze(0).to(device)
+        for i, labels in enumerate(train_labels):
+            x = build_input(train_seqs[i], train_vision[i] if use_vision else None)
             y = torch.from_numpy(labels).unsqueeze(0).to(device)
             optimizer.zero_grad()
             outputs = model(x)
@@ -82,10 +117,10 @@ def run_training(
     model.eval()
     f1_scores = []
     with torch.no_grad():
-        for embeddings, labels in zip(val_seqs, val_labels):
-            x = torch.from_numpy(embeddings).unsqueeze(0).to(device)
+        for i, labels in enumerate(val_labels):
+            x = build_input(val_seqs[i], val_vision[i] if use_vision else None)
             pred = model(x)[-1].argmax(dim=1).squeeze(0).cpu().numpy()
             f1_scores.append(f1_at_k(pred, labels))
 
     val_f1 = float(np.mean(f1_scores)) if f1_scores else 0.0
-    return {"model": model, "vocab": vocab, "val_f1": val_f1}
+    return {"model": model, "fusion": fusion, "vocab": vocab, "val_f1": val_f1}
