@@ -229,13 +229,54 @@ silently apply to a differently-ordered feature vector.
 segments — a demo with no labeled action drags any average down as if it were a total miss,
 rather than being excluded.
 
-🟡 No class-imbalance handling in the classifier's `CrossEntropyLoss` — background is the
-dominant class in real data (measured ~46% of tokens on one demo). Unclear whether
-Nomadic/M2R2 handle this; worth checking if our numbers come in surprisingly low.
+🟡 No class-imbalance handling in the classifier's `CrossEntropyLoss`. **Corrected
+measurement:** an earlier note here recorded background as "the dominant class in real data
+(~46% of tokens on one demo)". That figure came from a single demo and does not hold at
+corpus level. Measured across the finished 148-demo download, token-level via
+`align_labels_to_grid` on a 12-demo sample per split, background is **1.8% of train tokens**
+— the corpus is almost entirely labeled. The real imbalance is between *action* classes:
+**33:1, Grasp (36.5%) vs Nudge (1.1%)**. Since `f1_at_k` already excludes background segments
+from both sides, background is close to a non-issue; whether the tail classes (Nudge, Push,
+Lift) are actually being missed is the open question, and needs per-class F1 on validation
+before any weighting is applied. See `docs/hyperparameters.md`.
 
-🟡 `train_tokenizer` has no per-epoch logging or held-out validation loss — `final_loss` is
-just the last training batch's loss (noisy), not a real training-quality summary. Fine for
-smoke tests, insufficient for judging convergence on the real 148-demo run.
+🟡 **The three splits are not distributionally identical.** Measured token-level: `Align` is
+12.6% of train but 18.8% of val; `Pull` is 4.5% of train but 9.2% of test. Validation F1@50
+may therefore differ systematically from test F1@50 for reasons unrelated to the model, so
+val is usable for *ranking* configurations but its absolute number should not be quoted as a
+test estimate.
+
+🟢 ~~**`train_tokenizer` has no per-epoch logging or held-out validation loss.**~~ **Fixed.**
+`final_loss` was the last training batch's loss — a single noisy sample, not a training
+summary. `train_tokenizer` now returns `history`, one entry per epoch with the mean
+`train_loss` over that epoch and, when `val_paths` is given, a held-out `val_loss`. Validation
+windows are normalized with the *training* mean/std; recomputing them over the validation
+demos would leak their distribution into the evaluation and make the two losses
+incomparable.
+
+The gap between the two numbers is not academic. Measured on 3 train / 2 val demos, 5 epochs:
+
+```
+  epoch   1/5  train 2.53685  val 1.93681
+  epoch   2/5  train 1.94951  val 1.93918
+  epoch   3/5  train 2.01391  val 1.93180
+  epoch   4/5  train 1.90094  val 5.88862
+  epoch   5/5  train 2.17162  val 4.24447
+
+final_loss (last batch, the old number): 0.91856
+last epoch mean train loss:              2.17162
+```
+
+`final_loss` reported 0.92 where the epoch mean was 2.17 — **2.4x optimistic**, purely
+because the last batch happened to be easy. It would have been the only signal available for
+judging convergence on the full run.
+
+Two things the new logging immediately exposes on this short run, both previously invisible:
+training loss is not decreasing monotonically (2.54 → 1.95 → 2.01 → 1.90 → 2.17), and
+validation loss jumps 1.93 → 5.89 at epoch 4. Whether that instability persists at full
+scale is now an observable question rather than an unanswerable one. `compare.py` passes the
+validation split for tokenizer monitoring when scoring on validation, and `None` on the final
+test run (where val is folded into training and test must not be touched).
 
 ## How to use this doc
 

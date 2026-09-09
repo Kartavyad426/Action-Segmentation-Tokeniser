@@ -87,6 +87,9 @@ def main(eval_on: str = "val", fresh: bool = True, tokenizer_ckpt: str = "tokeni
     from enrichment.vision_features import load_vision_encoder
 
     train_paths, val_paths, test_paths = split_available_demos_3way()
+    # Held-out set for the tokenizer's own per-epoch loss. Only available when scoring on
+    # validation: the final test run folds val into training, and test must not be touched.
+    tokenizer_val = val_paths if eval_on == "val" else None
     train_paths, eval_paths, split_name = resolve_eval_split(train_paths, val_paths, test_paths, eval_on)
     print(f"{len(train_paths)} train demos, {len(eval_paths)} {split_name} demos available")
     if split_name == "test":
@@ -94,7 +97,8 @@ def main(eval_on: str = "val", fresh: bool = True, tokenizer_ckpt: str = "tokeni
 
     if fresh and reset_tokenizer_checkpoint(tokenizer_ckpt):
         print(f"removed stale tokenizer checkpoint at {tokenizer_ckpt}; training from scratch")
-    train_tokenizer(train_paths, tokenizer_ckpt, device="cuda")
+    print("training tokenizer")
+    train_tokenizer(train_paths, tokenizer_ckpt, device="cuda", val_paths=tokenizer_val)
 
     # The spec's checks 1-3 gate moving on to the classifier. Run them on held-out demos
     # before spending hours of GPU time on three classifier arms built over a bad tokenizer.

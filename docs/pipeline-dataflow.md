@@ -171,8 +171,9 @@ flowchart LR
 
 This demo has 8 low-level segments drawing on 4 distinct labels: `Align`, `Approach`,
 `Grasp`, `Lift`. Any token whose center falls outside every labeled span becomes
-`background` (class 0) — measured at ~46% of tokens on one demo, which is why class
-imbalance is an open 🟡 item.
+`background` (class 0) — 46% of tokens on *this* demo, but only **1.8% corpus-wide**: this
+demo is unusually sparsely labeled. Across all 148 demos the vocabulary is 10 classes and the
+real imbalance is 33:1 between Grasp and Nudge. See `docs/hyperparameters.md`.
 
 Only **low-level** labels are used. The high-level ones in the same file ("Pick Ethernet")
 are task- and object-specific and would not generalize the way this vocabulary is meant to.
