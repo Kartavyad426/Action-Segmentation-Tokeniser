@@ -1,5 +1,6 @@
 """Train the MS-TCN temporal classifier on frozen tokenizer embeddings."""
 
+import logging
 import time
 
 import numpy as np
@@ -16,6 +17,8 @@ from pathlib import Path
 from tokenizer.data import RATE_HZ, load_demo, resample_to_grid
 from tokenizer.train import load_checkpoint
 from tokenizer.windowing import demo_to_sequence
+
+log = logging.getLogger(__name__)
 
 
 def build_demo_sequence(tokenizer_model, mean, std, demo_path: str, window: int):
@@ -60,10 +63,9 @@ def _prepare_split(
                 )
             )
             if verbose:
-                print(
+                log.info(
                     f"    vision {i}/{len(demo_paths)}  {Path(path).stem}  "
-                    f"{len(centers)} tokens  {time.time() - started:.1f}s",
-                    flush=True,
+                    f"{len(centers)} tokens  {time.time() - started:.1f}s"
                 )
     return sequences, vision_seqs, label_seqs
 
@@ -168,10 +170,9 @@ def run_training(
         history.append({"epoch": epoch, "train_loss": train_loss, "val_f1": val_f1})
         if verbose:
             f1_str = f"  val_f1 {val_f1:.4f}" if val_f1 is not None else ""
-            print(
+            log.info(
                 f"    epoch {epoch:>3}/{epochs}  loss {train_loss:.5f}{f1_str}"
-                f"  ({time.time() - started:.1f}s)",
-                flush=True,
+                f"  ({time.time() - started:.1f}s)"
             )
 
     model.eval()

@@ -117,6 +117,9 @@ are worth changing.
 # tuning runs: trains on 89 demos, scores on the 22 validation demos
 python -m temporal_classifier.compare --eval-on val
 
+# reuse a previous run's tokenizer and completed arms (only if its configuration matches)
+python -m temporal_classifier.compare --resume-from runs/20260910-143000
+
 # the final number: folds val back into training (111 demos) and scores on the
 # 37-demo official test split. Only run this once, with hyperparameters frozen.
 python -m temporal_classifier.compare --eval-on test
@@ -127,19 +130,42 @@ Must be invoked as `python -m temporal_classifier.compare`, not
 `sys.path` instead of the repo root, and the package's own imports fail. Tests never catch
 this because pytest adds the rootdir itself.
 
+### Every run owns a directory
+
+Each invocation creates `runs/<YYYYmmdd-HHMMSS>/` and `runs/latest` symlinks to it. Runs are
+never overwritten or deleted, and the tokenizer checkpoint lives *inside* the run directory
+rather than at a fixed path, so a run stays fully interpretable long after it finished and a
+later run cannot destroy an earlier one's evidence:
+
+| file | contents |
+|---|---|
+| `config.json` | git commit, torch/python versions, command line, every hyperparameter, and the **full demo membership** of all three splits — not just counts, so a split that silently shifts is detectable |
+| `run.log` | timestamped, written by the process itself rather than by shell redirection. Tokenizer epochs, classifier epochs, per-demo vision progress and gate results all land here |
+| `tokenizer_checkpoint.pt` | this run's tokenizer, fingerprinted with its training demos and hyperparameters |
+| `tokenizer_history.json` | per-epoch train and held-out validation loss |
+| `tokenizer_report.json` | the three gate metrics on held-out demos |
+| `results.json` | each arm's F1@50, wall time and per-epoch history, written the moment that arm finishes |
+
+`results.json` is written via atomic rename as each arm completes, so an interrupted run
+never loses a finished arm. It is keyed by tokenizer fingerprint, so arms recorded against a
+different tokenizer are automatically discarded rather than silently compared.
+
 Flags:
 
 - `--eval-on {val,test}` — which split to score on. Defaults to `val`; `test` prints a
   warning, since anything tuned against it stops being comparable to published numbers.
-- `--keep-checkpoint` — reuse an existing `tokenizer_checkpoint.pt` instead of retraining
-  from scratch. Off by default: a checkpoint left by a smoke test must not silently become
-  the tokenizer for a full run.
+- `--resume-from DIR` — copy a previous run's tokenizer and completed arms into this run,
+  but only if that checkpoint's fingerprint matches this run's demo set and hyperparameters.
+  On mismatch it refuses and trains fresh rather than silently reusing the wrong codebook.
+  The previous run directory is left untouched.
+- `--runs-base DIR` — parent directory for run folders (default `runs`).
 - `--skip-gates` — train the classifier even if the tokenizer fails its health checks.
 
 The run aborts before classifier training if the tokenizer fails its gates, which costs
 minutes rather than the hours the three classifier arms take. Vision features are cached to
-`vision_cache/` and are *not* cleared between runs: they key on token centers, so they stay
-valid when the tokenizer is retrained and self-invalidate if `window` changes.
+`vision_cache/` *outside* the run directories and shared across runs: they key on token
+centers, so they stay valid when the tokenizer is retrained and self-invalidate if `window`
+changes.
 
 ## Key implementation decisions and why
 

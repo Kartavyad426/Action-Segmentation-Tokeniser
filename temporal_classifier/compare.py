@@ -3,6 +3,9 @@
 import json
 import logging
 import os
+import shutil
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,55 +28,131 @@ TOKENIZER_HP = dict(
 log = logging.getLogger("compare")
 
 
+@dataclass
+class RunPaths:
+    """Everything a single run produces, all under one directory that is never reused."""
+
+    dir: str
+    log: str
+    config: str
+    checkpoint: str
+    results: str
+    tokenizer_report: str
+    tokenizer_history: str
+
+
+def new_run(base: str = "runs", now: datetime | None = None) -> RunPaths:
+    """Create a fresh timestamped run directory and point `latest` at it.
+
+    Runs are never overwritten: the checkpoint, the config, the log and the results all live
+    together, so a run stays interpretable long after it finished and a later run cannot
+    destroy an earlier one's evidence.
+    """
+    now = now or datetime.now()
+    stamp = now.strftime("%Y%m%d-%H%M%S")
+    path = os.path.join(base, stamp)
+    suffix = 1
+    while os.path.exists(path):  # same-second reruns must not collide
+        path = os.path.join(base, f"{stamp}-{suffix}")
+        suffix += 1
+    os.makedirs(path)
+
+    link = os.path.join(base, "latest")
+    tmp_link = link + ".tmp"
+    if os.path.islink(tmp_link) or os.path.exists(tmp_link):
+        os.remove(tmp_link)
+    os.symlink(os.path.abspath(path), tmp_link)
+    os.replace(tmp_link, link)
+
+    return RunPaths(
+        dir=path,
+        log=os.path.join(path, "run.log"),
+        config=os.path.join(path, "config.json"),
+        checkpoint=os.path.join(path, "tokenizer_checkpoint.pt"),
+        results=os.path.join(path, "results.json"),
+        tokenizer_report=os.path.join(path, "tokenizer_report.json"),
+        tokenizer_history=os.path.join(path, "tokenizer_history.json"),
+    )
+
+
+def _git_commit() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+def write_run_config(run: RunPaths, **info) -> dict:
+    """Record everything needed to interpret or reproduce this run's numbers later."""
+    import torch as _torch
+
+    splits = info.pop("splits", {})
+    config = {
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "git_commit": _git_commit(),
+        "torch_version": _torch.__version__,
+        "python_version": sys.version.split()[0],
+        "command": " ".join(sys.argv),
+        "run_dir": run.dir,
+        # demo membership, not just counts: a split that silently shifts must be detectable
+        "splits": {**splits, "counts": {k: len(v) for k, v in splits.items()}},
+        **info,
+    }
+    with open(run.config, "w") as f:
+        json.dump(config, f, indent=2)
+    return config
+
+
+def adopt_previous_run(run: RunPaths, previous_dir: str, fingerprint: str) -> bool:
+    """Copy a previous run's tokenizer and completed arms into this run, if compatible.
+
+    Copied, never referenced in place: the new run must own a complete, self-contained
+    record, and the previous run must remain exactly as it was.
+    """
+    old = RunPaths(
+        dir=previous_dir,
+        log=os.path.join(previous_dir, "run.log"),
+        config=os.path.join(previous_dir, "config.json"),
+        checkpoint=os.path.join(previous_dir, "tokenizer_checkpoint.pt"),
+        results=os.path.join(previous_dir, "results.json"),
+        tokenizer_report=os.path.join(previous_dir, "tokenizer_report.json"),
+        tokenizer_history=os.path.join(previous_dir, "tokenizer_history.json"),
+    )
+    if not os.path.exists(old.checkpoint):
+        return False
+    try:
+        import torch as _torch
+
+        found = _torch.load(old.checkpoint, map_location="cpu", weights_only=False)["config"].get("fingerprint")
+    except Exception:
+        return False
+    if found != fingerprint:
+        return False
+
+    shutil.copy2(old.checkpoint, run.checkpoint)
+    if os.path.exists(old.results):
+        shutil.copy2(old.results, run.results)
+    return True
+
+
 def setup_logging(run_dir: str) -> str:
     """Everything printed also lands in a file, so a run that dies leaves a record."""
     os.makedirs(run_dir, exist_ok=True)
     path = os.path.join(run_dir, "run.log")
     fmt = logging.Formatter("%(asctime)s  %(message)s", datefmt="%H:%M:%S")
-    log.setLevel(logging.INFO)
-    log.handlers.clear()
+    # Configure the ROOT logger. tokenizer.train and temporal_classifier.train report their
+    # own per-epoch and per-demo progress through module loggers, and all of it has to reach
+    # the same file. Mixing print() with logging previously sent that progress to whatever
+    # stdout happened to be -- on a nohup run, /dev/null.
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers.clear()
     for handler in (logging.StreamHandler(), logging.FileHandler(path)):
         handler.setFormatter(fmt)
-        log.addHandler(handler)
+        root.addHandler(handler)
     return path
-
-
-@dataclass
-class TokenizerDecision:
-    retrain: bool
-    reason: str
-
-
-def resolve_tokenizer(path: str, expected_fingerprint: str, keep: bool = False) -> TokenizerDecision:
-    """Decide whether an existing tokenizer checkpoint may be reused, and delete it if not.
-
-    Reusing a checkpoint is only ever safe when it was trained on the same demos with the
-    same hyperparameters. Anything else -- a changed codebook size, a changed demo split,
-    a leftover from a smoke test -- would silently apply the wrong codebook and
-    normalization statistics to the whole run, with nothing downstream able to detect it.
-    So the stale file is removed rather than merely ignored: it cannot then be picked up by
-    a later run either.
-    """
-    if not os.path.exists(path):
-        return TokenizerDecision(True, "no checkpoint on disk")
-    if not keep:
-        os.remove(path)
-        return TokenizerDecision(True, "training from scratch (pass --keep-checkpoint to reuse)")
-
-    found = None
-    try:
-        found = torch.load(path, map_location="cpu", weights_only=False)["config"].get("fingerprint")
-    except Exception as exc:  # unreadable or pre-fingerprint checkpoint
-        os.remove(path)
-        return TokenizerDecision(True, f"checkpoint unreadable ({type(exc).__name__}); removed")
-
-    if found != expected_fingerprint:
-        os.remove(path)
-        return TokenizerDecision(
-            True,
-            f"fingerprint mismatch (checkpoint {found}, this run {expected_fingerprint}); removed",
-        )
-    return TokenizerDecision(False, f"reusing checkpoint with matching fingerprint {found}")
 
 
 class ResultLog:
@@ -106,19 +185,6 @@ class ResultLog:
         with open(tmp, "w") as f:
             json.dump({"fingerprint": self.fingerprint, "arms": self.arms}, f, indent=2)
         os.replace(tmp, self.path)  # atomic: a crash mid-write cannot corrupt the log
-
-
-def reset_tokenizer_checkpoint(path: str) -> bool:
-    """Delete a stale tokenizer checkpoint so a run always trains from scratch.
-
-    `load_checkpoint` will happily reload whatever is at this path, applying an old
-    codebook and old normalization stats to a new corpus. A checkpoint left behind by a
-    smoke test on a handful of demos must not silently become the tokenizer for the full run.
-    """
-    if os.path.exists(path):
-        os.remove(path)
-        return True
-    return False
 
 
 def resolve_eval_split(train_paths, val_paths, test_paths, eval_on: str = "val"):
@@ -181,51 +247,66 @@ def format_tokenizer_report(report: dict) -> str:
     )
 
 
-def main(eval_on: str = "val", fresh: bool = True, tokenizer_ckpt: str = "tokenizer_checkpoint.pt",
-         skip_gates: bool = False, run_dir: str = "runs/latest"):
+CLASSIFIER_HP = dict(epochs=30, channels=64, num_layers=9, num_stages=3, lr=1e-3,
+                     smoothing_weight=0.15, tau=4.0, fusion_out_dim=128, eval_every=5)
+
+
+def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None = None,
+         skip_gates: bool = False):
     from enrichment.vision_features import load_vision_encoder
 
-    log_path = setup_logging(run_dir)
+    run = new_run(runs_base)
+    setup_logging(run.dir)
     started = time.time()
-    log.info(f"run started {datetime.now():%Y-%m-%d %H:%M:%S}  logging to {log_path}")
+    log.info(f"run directory {run.dir}")
 
     train_paths, val_paths, test_paths = split_available_demos_3way()
     # Held-out set for the tokenizer's own per-epoch loss. Only available when scoring on
     # validation: the final test run folds val into training, and test must not be touched.
     tokenizer_val = val_paths if eval_on == "val" else None
+    splits = {"train": train_paths, "val": val_paths, "test": test_paths}
     train_paths, eval_paths, split_name = resolve_eval_split(train_paths, val_paths, test_paths, eval_on)
     log.info(f"{len(train_paths)} train demos, {len(eval_paths)} {split_name} demos")
     if split_name == "test":
         log.info("!! scoring on the held-out test split -- only do this once, hyperparameters frozen")
 
     fingerprint = tokenizer_fingerprint(train_paths, **TOKENIZER_HP)
-    decision = resolve_tokenizer(tokenizer_ckpt, fingerprint, keep=not fresh)
-    log.info(f"tokenizer fingerprint {fingerprint}: {decision.reason}")
+    config = write_run_config(
+        run, eval_on=eval_on, split_scored=split_name, fingerprint=fingerprint,
+        tokenizer_hp=TOKENIZER_HP, classifier_hp=CLASSIFIER_HP, splits=splits,
+        vision_cache_dir="vision_cache", resume_from=resume_from,
+    )
+    log.info(f"config written to {run.config} (git {config['git_commit'][:8]}, torch {config['torch_version']})")
+    log.info(f"tokenizer fingerprint {fingerprint}")
 
-    if decision.retrain:
-        log.info(f"training tokenizer on {len(train_paths)} demos")
+    adopted = adopt_previous_run(run, resume_from, fingerprint) if resume_from else False
+    if resume_from:
+        log.info(f"resume from {resume_from}: {'adopted tokenizer + results' if adopted else 'REFUSED (missing or fingerprint mismatch) -- training fresh'}")
+
+    if not adopted:
+        log.info(f"training tokenizer on {len(train_paths)} demos, {TOKENIZER_HP['epochs']} epochs")
         result = train_tokenizer(
-            train_paths, tokenizer_ckpt, device="cuda", val_paths=tokenizer_val, **TOKENIZER_HP
+            train_paths, run.checkpoint, device="cuda", val_paths=tokenizer_val, **TOKENIZER_HP
         )
-        for h in result["history"]:
-            val = f"  val {h['val_loss']:.5f}" if h["val_loss"] is not None else ""
-            log.info(f"  tokenizer epoch {h['epoch']:>3}/{TOKENIZER_HP['epochs']}  train {h['train_loss']:.5f}{val}")
+        with open(run.tokenizer_history, "w") as f:
+            json.dump({"fingerprint": fingerprint, "history": result["history"]}, f, indent=2)
+        log.info(f"tokenizer saved to {run.checkpoint}")
 
     # The spec's checks 1-3 gate moving on to the classifier. Run them on held-out demos
     # before spending hours of GPU time on three classifier arms built over a bad tokenizer.
-    model, mean, std, config = load_checkpoint(tokenizer_ckpt)
+    model, mean, std, tok_config = load_checkpoint(run.checkpoint)
     report = evaluate_tokenizer(
-        model, config["num_codes"], config["window"], _load_demos(eval_paths), mean, std, device="cuda"
+        model, tok_config["num_codes"], tok_config["window"], _load_demos(eval_paths), mean, std, device="cuda"
     )
     for line in format_tokenizer_report(report).rstrip().splitlines():
         log.info(line)
-    with open(os.path.join(run_dir, "tokenizer_report.json"), "w") as f:
+    with open(run.tokenizer_report, "w") as f:
         json.dump({"fingerprint": fingerprint, **report}, f, indent=2)
 
     failures = check_tokenizer_gates(report)
     if failures:
-        for f in failures:
-            log.info(f"  GATE FAILED: {f}")
+        for failure in failures:
+            log.info(f"  GATE FAILED: {failure}")
         if not skip_gates:
             raise SystemExit(
                 "tokenizer failed its quality gates; fix the tokenizer before training the "
@@ -233,7 +314,7 @@ def main(eval_on: str = "val", fresh: bool = True, tokenizer_ckpt: str = "tokeni
             )
         log.info("  proceeding anyway (--skip-gates)")
 
-    results = ResultLog(os.path.join(run_dir, "results.json"), fingerprint)
+    results = ResultLog(run.results, fingerprint)
     vision_encoder = None
 
     # All arms share one tokenizer checkpoint and the control arm's vocabulary, so the only
@@ -252,11 +333,11 @@ def main(eval_on: str = "val", fresh: bool = True, tokenizer_ckpt: str = "tokeni
             continue
         if extra.get("use_vision") and vision_encoder is None:
             vision_encoder = load_vision_encoder(device="cuda")
-        log.info(f"arm {name}: training")
+        log.info(f"arm {name}: starting")
         t0 = time.time()
         out = run_training(
-            tokenizer_ckpt, train_paths, eval_paths, vocab=vocab, device="cuda",
-            vision_encoder=vision_encoder, vision_cache_dir="vision_cache", **extra,
+            run.checkpoint, train_paths, eval_paths, vocab=vocab, device="cuda",
+            vision_encoder=vision_encoder, vision_cache_dir="vision_cache", **extra, **CLASSIFIER_HP,
         )
         vocab = vocab or out["vocab"]
         results.record(
@@ -265,16 +346,15 @@ def main(eval_on: str = "val", fresh: bool = True, tokenizer_ckpt: str = "tokeni
              "history": out["history"], "vocab": out["vocab"]},
             fingerprint,
         )
-        log.info(f"arm {name}: F1@50 {out['val_f1']:.4f}  ({time.time() - t0:.0f}s)  -> results.json")
+        log.info(f"arm {name}: F1@50 {out['val_f1']:.4f}  ({time.time() - t0:.0f}s)  -> {run.results}")
 
-    report_text = format_comparison(
+    for line in format_comparison(
         results.get("telemetry_only")["val_f1"],
         results.get("vision_nearest")["val_f1"],
         results.get("vision_pooled")["val_f1"],
-    )
-    for line in report_text.rstrip().splitlines():
+    ).rstrip().splitlines():
         log.info(line)
-    log.info(f"run finished in {(time.time() - started) / 60:.1f} min")
+    log.info(f"run finished in {(time.time() - started) / 60:.1f} min -- all artifacts in {run.dir}")
 
 
 if __name__ == "__main__":
@@ -282,8 +362,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval-on", choices=["val", "test"], default="val")
-    parser.add_argument("--keep-checkpoint", action="store_true", help="reuse an existing tokenizer checkpoint")
     parser.add_argument("--skip-gates", action="store_true", help="train the classifier even if the tokenizer fails its gates")
-    parser.add_argument("--run-dir", default="runs/latest", help="where run.log and results.json are written")
+    parser.add_argument("--runs-base", default="runs", help="parent directory for per-run folders")
+    parser.add_argument("--resume-from", default=None,
+                        help="a previous run directory whose tokenizer and completed arms to reuse "
+                             "(only if its fingerprint matches this run's configuration)")
     args = parser.parse_args()
-    main(eval_on=args.eval_on, fresh=not args.keep_checkpoint, skip_gates=args.skip_gates, run_dir=args.run_dir)
+    main(eval_on=args.eval_on, runs_base=args.runs_base, resume_from=args.resume_from,
+         skip_gates=args.skip_gates)

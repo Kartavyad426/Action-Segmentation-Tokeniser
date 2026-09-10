@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 
 import torch
@@ -10,6 +11,8 @@ from torch.utils.data import DataLoader
 from tokenizer.data import load_demo, resample_to_grid
 from tokenizer.model import MotionTokenizer
 from tokenizer.windowing import WindowedTelemetryDataset
+
+log = logging.getLogger(__name__)
 
 
 def tokenizer_fingerprint(demo_paths, **hyperparameters) -> str:
@@ -109,7 +112,7 @@ def train_tokenizer(
         history.append({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
         if verbose:
             val_str = f"  val {val_loss:.5f}" if val_loss is not None else ""
-            print(f"  epoch {epoch:>3}/{epochs}  train {train_loss:.5f}{val_str}")
+            log.info(f"  tokenizer epoch {epoch:>3}/{epochs}  train {train_loss:.5f}{val_str}")
 
     torch.save(
         {
