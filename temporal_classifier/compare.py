@@ -14,6 +14,7 @@ from datetime import datetime
 
 import torch
 
+from temporal_classifier.provenance import format_gpu_state, gpu_state, runtime_differences
 from temporal_classifier.train import run_training
 from tokenizer.data import load_demo, resample_to_grid
 from tokenizer.evaluate import check_tokenizer_gates, evaluate_tokenizer
@@ -309,17 +310,28 @@ def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None 
     # The tokenizer seed is part of the fingerprint (a different seed is a different
     # tokenizer); the classifier seed is not, so classifier repeats can reuse one tokenizer.
     fingerprint = tokenizer_fingerprint(train_paths, **tokenizer_hp)
+    started_gpu = gpu_state()
     config = write_run_config(
         run, eval_on=eval_on, split_scored=split_name, fingerprint=fingerprint,
         tokenizer_hp=tokenizer_hp, classifier_hp=classifier_hp, splits=splits,
-        vision_cache_dir="vision_cache", resume_from=resume_from,
+        vision_cache_dir="vision_cache", resume_from=resume_from, gpu=started_gpu,
     )
+    log.info(format_gpu_state(started_gpu))
     log.info(f"config written to {run.config} (git {config['git_commit'][:8]}, torch {config['torch_version']})")
     log.info(f"tokenizer fingerprint {fingerprint}")
 
     adopted = adopt_previous_run(run, resume_from, fingerprint) if resume_from else False
     if resume_from:
         log.info(f"resume from {resume_from}: {'adopted tokenizer + results' if adopted else 'REFUSED (missing or fingerprint mismatch) -- training fresh'}")
+        if adopted:
+            # Reported, not fatal. A checkpoint trained at 15W is perfectly valid at 35W,
+            # but any timing carried over from that run is not comparable to this one's.
+            try:
+                previous = json.load(open(os.path.join(resume_from, "config.json"))).get("gpu", {})
+            except (OSError, json.JSONDecodeError):
+                previous = {}
+            for diff in runtime_differences(previous, started_gpu) if previous else []:
+                log.info(f"  runtime differs from the adopted run: {diff} (timings not comparable)")
 
     if not adopted:
         log.info(f"training tokenizer on {len(train_paths)} demos, {TOKENIZER_HP['epochs']} epochs")
@@ -390,6 +402,7 @@ def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None 
         if extra.get("use_vision") and vision_encoder is None:
             vision_encoder = load_vision_encoder(device="cuda")
         log.info(f"arm {name}: starting")
+        arm_gpu = gpu_state()
         t0 = time.time()
         out = run_training(
             run.checkpoint, train_paths, eval_paths, vocab=vocab, device="cuda",
@@ -399,7 +412,9 @@ def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None 
         results.record(
             name,
             {"val_f1": out["val_f1"], "seconds": round(time.time() - t0, 1),
-             "history": out["history"], "vocab": out["vocab"]},
+             "history": out["history"], "vocab": out["vocab"],
+             # wall time is only interpretable next to the power state that produced it
+             "gpu_at_start": arm_gpu, "gpu_at_end": gpu_state()},
             fingerprint,
         )
         log.info(f"arm {name}: F1@50 {out['val_f1']:.4f}  ({time.time() - t0:.0f}s)  -> {run.results}")
