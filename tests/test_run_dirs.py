@@ -6,7 +6,13 @@ from datetime import datetime
 
 import pytest
 
-from temporal_classifier.compare import RunPaths, adopt_previous_run, new_run, write_run_config
+from temporal_classifier.compare import (
+    RunPaths,
+    adopt_previous_run,
+    new_run,
+    previous_fingerprint,
+    write_run_config,
+)
 
 
 def test_each_run_gets_its_own_timestamped_directory(tmp_path):
@@ -103,3 +109,28 @@ def test_adopting_prefers_the_previous_runs_best_checkpoint(tmp_path):
     assert adopt_previous_run(new, old.dir, fingerprint="F") is True
 
     assert torch.load(new.checkpoint, weights_only=False)["epoch"] == 6
+
+
+def test_force_adopts_a_previous_run_despite_a_fingerprint_mismatch(tmp_path):
+    # Escape hatch for exactly one situation: a run whose config changed mid-flight, where
+    # the operator knows the checkpoint is the one they want. Refusal stays the default.
+    import torch
+    old = new_run(str(tmp_path), now=datetime(2026, 9, 11, 10, 0, 0))
+    torch.save({"config": {"fingerprint": "OLD"}, "epoch": 20}, old.checkpoint)
+    json.dump({"fingerprint": "OLD", "arms": {"telemetry_only": {"val_f1": 0.84}}},
+              open(old.results, "w"))
+
+    new = new_run(str(tmp_path), now=datetime(2026, 9, 11, 11, 0, 0))
+
+    assert adopt_previous_run(new, old.dir, fingerprint="NEW") is False
+    assert adopt_previous_run(new, old.dir, fingerprint="NEW", force=True) is True
+    assert os.path.exists(new.checkpoint)
+
+
+def test_previous_fingerprint_is_readable_for_reporting(tmp_path):
+    import torch
+    old = new_run(str(tmp_path), now=datetime(2026, 9, 11, 10, 0, 0))
+    torch.save({"config": {"fingerprint": "ABC123"}}, old.checkpoint)
+
+    assert previous_fingerprint(old.dir) == "ABC123"
+    assert previous_fingerprint(str(tmp_path / "nonexistent")) is None

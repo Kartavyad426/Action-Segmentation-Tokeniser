@@ -109,7 +109,21 @@ def write_run_config(run: RunPaths, **info) -> dict:
     return config
 
 
-def adopt_previous_run(run: RunPaths, previous_dir: str, fingerprint: str) -> bool:
+def previous_fingerprint(previous_dir: str) -> str | None:
+    """The fingerprint of a previous run's tokenizer, for reporting a mismatch."""
+    for name in ("tokenizer_checkpoint.best.pt", "tokenizer_checkpoint.pt"):
+        path = os.path.join(previous_dir, name)
+        if os.path.exists(path):
+            try:
+                import torch as _torch
+
+                return _torch.load(path, map_location="cpu", weights_only=False)["config"].get("fingerprint")
+            except Exception:
+                return None
+    return None
+
+
+def adopt_previous_run(run: RunPaths, previous_dir: str, fingerprint: str, force: bool = False) -> bool:
     """Copy a previous run's tokenizer and completed arms into this run, if compatible.
 
     Copied, never referenced in place: the new run must own a complete, self-contained
@@ -137,7 +151,7 @@ def adopt_previous_run(run: RunPaths, previous_dir: str, fingerprint: str) -> bo
         found = _torch.load(source, map_location="cpu", weights_only=False)["config"].get("fingerprint")
     except Exception:
         return False
-    if found != fingerprint:
+    if found != fingerprint and not force:
         return False
 
     shutil.copy2(source, run.checkpoint)
@@ -280,7 +294,7 @@ CLASSIFIER_HP = dict(epochs=30, channels=64, num_layers=9, num_stages=3, lr=1e-3
 
 def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None = None,
          skip_gates: bool = False, tokenizer_seed: int | None = None,
-         classifier_seed: int | None = None):
+         classifier_seed: int | None = None, force_resume: bool = False):
     from enrichment.vision_features import load_vision_encoder
 
     tokenizer_hp = dict(TOKENIZER_HP)
@@ -320,8 +334,14 @@ def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None 
     log.info(f"config written to {run.config} (git {config['git_commit'][:8]}, torch {config['torch_version']})")
     log.info(f"tokenizer fingerprint {fingerprint}")
 
-    adopted = adopt_previous_run(run, resume_from, fingerprint) if resume_from else False
+    adopted = adopt_previous_run(run, resume_from, fingerprint, force=force_resume) if resume_from else False
     if resume_from:
+        found = previous_fingerprint(resume_from)
+        if found != fingerprint:
+            log.info(f"  fingerprint mismatch: checkpoint {found}, this run expects {fingerprint}")
+            if force_resume:
+                log.info("  --force-resume given: adopting anyway. The adopted tokenizer was NOT "
+                         "trained under this run's configuration; results are that tokenizer's, not this config's.")
         log.info(f"resume from {resume_from}: {'adopted tokenizer + results' if adopted else 'REFUSED (missing or fingerprint mismatch) -- training fresh'}")
         if adopted:
             # Reported, not fatal. A checkpoint trained at 15W is perfectly valid at 35W,
@@ -435,6 +455,10 @@ if __name__ == "__main__":
     parser.add_argument("--eval-on", choices=["val", "test"], default="val")
     parser.add_argument("--skip-gates", action="store_true", help="train the classifier even if the tokenizer fails its gates")
     parser.add_argument("--runs-base", default="runs", help="parent directory for per-run folders")
+    parser.add_argument("--force-resume", action="store_true",
+                        help="adopt --resume-from even if its tokenizer fingerprint does not match "
+                             "this run's configuration. Only for a run whose config changed "
+                             "mid-flight; the adopted tokenizer is not this config's tokenizer.")
     parser.add_argument("--tokenizer-seed", type=int, default=None,
                         help="seed for tokenizer training; part of the fingerprint")
     parser.add_argument("--classifier-seed", type=int, default=None,
@@ -446,4 +470,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     main(eval_on=args.eval_on, runs_base=args.runs_base, resume_from=args.resume_from,
          skip_gates=args.skip_gates, tokenizer_seed=args.tokenizer_seed,
-         classifier_seed=args.classifier_seed)
+         classifier_seed=args.classifier_seed, force_resume=args.force_resume)
