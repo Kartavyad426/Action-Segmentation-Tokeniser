@@ -1,8 +1,10 @@
 """Run telemetry-only vs. vision-enriched classifier training and report the F1@50 delta."""
 
+import faulthandler
 import json
 import logging
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -137,6 +139,24 @@ def adopt_previous_run(run: RunPaths, previous_dir: str, fingerprint: str) -> bo
     return True
 
 
+def install_hang_diagnostics(run: RunPaths, watchdog_seconds: int = 900) -> str:
+    """Make a hang self-documenting.
+
+    Two runs stalled with the process pinned at 100% CPU and no output, and there was no way
+    to see where: yama ptrace_scope=1 blocks attaching a profiler to a process that is not a
+    descendant of the attaching shell. faulthandler works from inside the process instead.
+
+    - SIGUSR1 dumps every thread's Python stack on demand (`kill -USR1 <pid>`).
+    - A repeating watchdog dumps automatically if no epoch completes within the timeout, so
+      an unattended overnight hang still leaves evidence.
+    """
+    stream = open(os.path.join(run.dir, "faulthandler.log"), "w", buffering=1)
+    faulthandler.enable(file=stream, all_threads=True)
+    faulthandler.register(signal.SIGUSR1, file=stream, all_threads=True, chain=True)
+    faulthandler.dump_traceback_later(watchdog_seconds, repeat=True, file=stream, exit=False)
+    return stream.name
+
+
 def setup_logging(run_dir: str) -> str:
     """Everything printed also lands in a file, so a run that dies leaves a record."""
     os.makedirs(run_dir, exist_ok=True)
@@ -257,8 +277,10 @@ def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None 
 
     run = new_run(runs_base)
     setup_logging(run.dir)
+    dump_path = install_hang_diagnostics(run)
     started = time.time()
     log.info(f"run directory {run.dir}")
+    log.info(f"hang diagnostics: kill -USR1 {os.getpid()} dumps stacks to {dump_path}")
 
     train_paths, val_paths, test_paths = split_available_demos_3way()
     # Held-out set for the tokenizer's own per-epoch loss. Only available when scoring on
@@ -289,8 +311,17 @@ def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None 
             train_paths, run.checkpoint, device="cuda", val_paths=tokenizer_val, **TOKENIZER_HP
         )
         with open(run.tokenizer_history, "w") as f:
-            json.dump({"fingerprint": fingerprint, "history": result["history"]}, f, indent=2)
-        log.info(f"tokenizer saved to {run.checkpoint}")
+            json.dump({
+                "fingerprint": fingerprint, "history": result["history"],
+                "best_epoch": result["best_epoch"], "best_val_loss": result["best_val_loss"],
+            }, f, indent=2)
+        if result["best_checkpoint"]:
+            log.info(
+                f"best held-out loss {result['best_val_loss']:.5f} at epoch {result['best_epoch']}"
+                f"/{TOKENIZER_HP['epochs']}; using that checkpoint rather than the last"
+            )
+            shutil.copy2(result["best_checkpoint"], run.checkpoint)
+        log.info(f"tokenizer ready at {run.checkpoint}")
 
     # The spec's checks 1-3 gate moving on to the classifier. Run them on held-out demos
     # before spending hours of GPU time on three classifier arms built over a bad tokenizer.
