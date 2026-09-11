@@ -12,3 +12,7 @@ runs/
 vision_cache/
 run_full.log
 run_val.log
+crash.log
+*.log
+# but a published result keeps its run log
+!results/**/*.log
