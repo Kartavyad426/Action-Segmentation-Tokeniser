@@ -130,6 +130,25 @@ Must be invoked as `python -m temporal_classifier.compare`, not
 `sys.path` instead of the repo root, and the package's own imports fail. Tests never catch
 this because pytest adds the rootdir itself.
 
+### Plots
+
+```bash
+python -m temporal_classifier.plots runs/latest        # writes PNGs into the run directory
+python -m temporal_classifier.plots runs/2026... --out-dir /tmp/figs
+```
+
+Three figures, each written only if the run has data for it, so a run still in progress or
+one that died early is still plottable:
+
+- `tokenizer_training.png` — train and held-out loss per epoch, with the best held-out epoch
+  marked. Falls back to parsing `run.log` when `tokenizer_history.json` is absent, since the
+  log is the one artifact every run has.
+- `classifier_training.png` — per-arm training loss and validation F1@50 during training.
+  The F1 series carries its own epoch axis, because it is measured every `eval_every` epochs
+  and zipping it against all epochs would silently misalign the points.
+- `f1_comparison.png` — the deliverable: F1@50 per arm with the delta against the
+  telemetry-only control.
+
 ### Every run owns a directory
 
 Each invocation creates `runs/<YYYYmmdd-HHMMSS>/` and `runs/latest` symlinks to it. Runs are

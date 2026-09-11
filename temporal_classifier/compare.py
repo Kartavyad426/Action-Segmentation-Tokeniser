@@ -307,8 +307,14 @@ def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None 
 
     if not adopted:
         log.info(f"training tokenizer on {len(train_paths)} demos, {TOKENIZER_HP['epochs']} epochs")
+        def save_history(epoch, history):
+            """Written every epoch so a run in progress can be plotted and inspected."""
+            with open(run.tokenizer_history, "w") as f:
+                json.dump({"fingerprint": fingerprint, "history": history}, f, indent=2)
+
         result = train_tokenizer(
-            train_paths, run.checkpoint, device="cuda", val_paths=tokenizer_val, **TOKENIZER_HP
+            train_paths, run.checkpoint, device="cuda", val_paths=tokenizer_val,
+            on_epoch=save_history, **TOKENIZER_HP
         )
         with open(run.tokenizer_history, "w") as f:
             json.dump({
