@@ -24,7 +24,8 @@ from tokenizer.windowing import split_available_demos_3way
 # One source of truth: these are passed to train_tokenizer *and* hashed into the
 # fingerprint, so the recorded provenance cannot drift from what was actually trained.
 TOKENIZER_HP = dict(
-    epochs=20, window=15, stride=5, latent_dim=32, num_codes=512, hidden=64, batch_size=64, lr=1e-3,
+    epochs=20, window=15, stride=5, latent_dim=32, num_codes=512, hidden=64, batch_size=64,
+    lr=1e-3, seed=0,
 )
 
 log = logging.getLogger("compare")
@@ -273,12 +274,20 @@ def format_tokenizer_report(report: dict) -> str:
 
 
 CLASSIFIER_HP = dict(epochs=30, channels=64, num_layers=9, num_stages=3, lr=1e-3,
-                     smoothing_weight=0.15, tau=4.0, fusion_out_dim=128, eval_every=5)
+                     smoothing_weight=0.15, tau=4.0, fusion_out_dim=128, eval_every=5, seed=0)
 
 
 def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None = None,
-         skip_gates: bool = False):
+         skip_gates: bool = False, tokenizer_seed: int | None = None,
+         classifier_seed: int | None = None):
     from enrichment.vision_features import load_vision_encoder
+
+    tokenizer_hp = dict(TOKENIZER_HP)
+    classifier_hp = dict(CLASSIFIER_HP)
+    if tokenizer_seed is not None:
+        tokenizer_hp["seed"] = tokenizer_seed
+    if classifier_seed is not None:
+        classifier_hp["seed"] = classifier_seed
 
     run = new_run(runs_base)
     setup_logging(run.dir)
@@ -297,10 +306,12 @@ def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None 
     if split_name == "test":
         log.info("!! scoring on the held-out test split -- only do this once, hyperparameters frozen")
 
-    fingerprint = tokenizer_fingerprint(train_paths, **TOKENIZER_HP)
+    # The tokenizer seed is part of the fingerprint (a different seed is a different
+    # tokenizer); the classifier seed is not, so classifier repeats can reuse one tokenizer.
+    fingerprint = tokenizer_fingerprint(train_paths, **tokenizer_hp)
     config = write_run_config(
         run, eval_on=eval_on, split_scored=split_name, fingerprint=fingerprint,
-        tokenizer_hp=TOKENIZER_HP, classifier_hp=CLASSIFIER_HP, splits=splits,
+        tokenizer_hp=tokenizer_hp, classifier_hp=classifier_hp, splits=splits,
         vision_cache_dir="vision_cache", resume_from=resume_from,
     )
     log.info(f"config written to {run.config} (git {config['git_commit'][:8]}, torch {config['torch_version']})")
@@ -319,7 +330,7 @@ def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None 
 
         result = train_tokenizer(
             train_paths, run.checkpoint, device="cuda", val_paths=tokenizer_val,
-            on_epoch=save_history, **TOKENIZER_HP
+            on_epoch=save_history, **tokenizer_hp
         )
         with open(run.tokenizer_history, "w") as f:
             json.dump({
@@ -382,7 +393,7 @@ def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None 
         t0 = time.time()
         out = run_training(
             run.checkpoint, train_paths, eval_paths, vocab=vocab, device="cuda",
-            vision_encoder=vision_encoder, vision_cache_dir="vision_cache", **extra, **CLASSIFIER_HP,
+            vision_encoder=vision_encoder, vision_cache_dir="vision_cache", **extra, **classifier_hp,
         )
         vocab = vocab or out["vocab"]
         results.record(
@@ -409,9 +420,15 @@ if __name__ == "__main__":
     parser.add_argument("--eval-on", choices=["val", "test"], default="val")
     parser.add_argument("--skip-gates", action="store_true", help="train the classifier even if the tokenizer fails its gates")
     parser.add_argument("--runs-base", default="runs", help="parent directory for per-run folders")
+    parser.add_argument("--tokenizer-seed", type=int, default=None,
+                        help="seed for tokenizer training; part of the fingerprint")
+    parser.add_argument("--classifier-seed", type=int, default=None,
+                        help="seed for classifier training; NOT part of the fingerprint, so "
+                             "repeats can reuse one tokenizer via --resume-from")
     parser.add_argument("--resume-from", default=None,
                         help="a previous run directory whose tokenizer and completed arms to reuse "
                              "(only if its fingerprint matches this run's configuration)")
     args = parser.parse_args()
     main(eval_on=args.eval_on, runs_base=args.runs_base, resume_from=args.resume_from,
-         skip_gates=args.skip_gates)
+         skip_gates=args.skip_gates, tokenizer_seed=args.tokenizer_seed,
+         classifier_seed=args.classifier_seed)

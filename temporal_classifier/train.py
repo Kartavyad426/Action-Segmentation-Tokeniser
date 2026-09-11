@@ -90,12 +90,19 @@ def run_training(
     smoothing_weight: float = 0.15,
     tau: float = 4.0,
     eval_every: int = 5,
+    seed: int = 0,
     verbose: bool = True,
 ) -> dict:
     if device == "cpu":
         # See tokenizer/train.py: default CPU intra-op thread pool causes ~140x overhead on
         # per-demo batches this small.
         torch.set_num_threads(1)
+
+    # Seeded before the classifier and fusion are constructed. Every arm in a comparison
+    # uses the same seed, so a difference between arms is attributable to the vision pathway
+    # rather than to initialization.
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
     tokenizer_model, mean, std, config = load_checkpoint(tokenizer_ckpt_path)
     window = config["window"]

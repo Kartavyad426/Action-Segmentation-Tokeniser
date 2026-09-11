@@ -7,3 +7,82 @@
 11:49:07    tokenizer epoch   1/20  train 1.42267  val 1.29605  codebook 0.462
 11:51:46    tokenizer epoch   2/20  train 1.22949  val 1.10474  codebook 0.509
 11:54:25    tokenizer epoch   3/20  train 1.29678  val 1.29357  codebook 0.520
+11:57:07    tokenizer epoch   4/20  train 1.33277  val 1.35665  codebook 0.551
+11:59:45    tokenizer epoch   5/20  train 1.31255  val 1.26855  codebook 0.601
+12:02:29    tokenizer epoch   6/20  train 1.30548  val 1.26786  codebook 0.636
+12:05:12    tokenizer epoch   7/20  train 1.32535  val 1.26848  codebook 0.641
+12:07:55    tokenizer epoch   8/20  train 1.31547  val 1.25238  codebook 0.660
+12:10:39    tokenizer epoch   9/20  train 1.30539  val 1.29378  codebook 0.672
+12:13:22    tokenizer epoch  10/20  train 1.28610  val 1.23897  codebook 0.685
+12:16:06    tokenizer epoch  11/20  train 1.33688  val 1.30320  codebook 0.698
+12:18:47    tokenizer epoch  12/20  train 1.30971  val 1.25457  codebook 0.698
+12:21:22    tokenizer epoch  13/20  train 1.34782  val 1.27003  codebook 0.703
+12:23:58    tokenizer epoch  14/20  train 1.31725  val 1.25807  codebook 0.707
+12:26:35    tokenizer epoch  15/20  train 1.33612  val 1.30296  codebook 0.715
+12:29:11    tokenizer epoch  16/20  train 1.33103  val 1.30002  codebook 0.724
+12:31:47    tokenizer epoch  17/20  train 1.31636  val 1.29533  codebook 0.731
+12:34:22    tokenizer epoch  18/20  train 1.32693  val 1.25823  codebook 0.726
+12:37:00    tokenizer epoch  19/20  train 1.32729  val 1.27509  codebook 0.727
+12:39:36    tokenizer epoch  20/20  train 1.34953  val 1.29416  codebook 0.733
+12:39:36  best codebook utilization 0.733 at epoch 20/20 (held-out loss 1.29416); using that checkpoint rather than the last -- loss alone selects for codebook collapse
+12:39:36  tokenizer ready at runs/20260911-114547/tokenizer_checkpoint.pt
+12:39:50  tokenizer health on 22 held-out demos
+12:39:50    reconstruction error   0.4034
+12:39:50    codebook utilization   0.725  (~92 effective codes)
+12:39:50    boundary f1            0.192  (recall 0.598, precision 0.115)
+12:39:50    boundary lift          +0.129  (chance 0.468)
+12:39:50    segment purity         0.501
+12:39:50  arm telemetry_only: starting
+12:41:27      epoch   1/30  loss 3.61529  (14.3s)
+12:41:41      epoch   2/30  loss 2.37180  (14.0s)
+12:41:55      epoch   3/30  loss 2.01286  (14.0s)
+12:42:09      epoch   4/30  loss 1.85875  (14.0s)
+12:42:24      epoch   5/30  loss 1.71367  val_f1 0.7597  (15.0s)
+12:42:38      epoch   6/30  loss 1.60347  (14.0s)
+12:42:52      epoch   7/30  loss 1.51565  (14.0s)
+12:43:06      epoch   8/30  loss 1.44191  (14.0s)
+12:43:20      epoch   9/30  loss 1.40094  (14.0s)
+12:43:35      epoch  10/30  loss 1.32675  val_f1 0.8164  (14.9s)
+12:43:49      epoch  11/30  loss 1.28726  (14.0s)
+12:44:03      epoch  12/30  loss 1.23917  (14.0s)
+12:44:17      epoch  13/30  loss 1.24110  (14.0s)
+12:44:31      epoch  14/30  loss 1.17313  (14.0s)
+12:44:46      epoch  15/30  loss 1.12850  val_f1 0.8225  (14.9s)
+12:45:00      epoch  16/30  loss 1.09119  (14.0s)
+12:45:14      epoch  17/30  loss 1.12222  (14.0s)
+12:45:28      epoch  18/30  loss 1.14262  (14.0s)
+12:45:42      epoch  19/30  loss 1.06079  (14.0s)
+12:45:56      epoch  20/30  loss 1.02619  val_f1 0.8235  (14.9s)
+12:46:10      epoch  21/30  loss 1.02233  (14.0s)
+12:46:24      epoch  22/30  loss 0.98670  (14.0s)
+12:46:38      epoch  23/30  loss 0.97949  (14.0s)
+12:46:52      epoch  24/30  loss 0.94386  (14.0s)
+12:47:07      epoch  25/30  loss 0.92429  val_f1 0.8211  (14.9s)
+12:47:21      epoch  26/30  loss 0.91085  (14.0s)
+12:47:35      epoch  27/30  loss 0.89587  (14.0s)
+12:47:49      epoch  28/30  loss 0.85930  (14.0s)
+12:48:03      epoch  29/30  loss 0.84753  (14.0s)
+12:48:18      epoch  30/30  loss 0.85299  val_f1 0.8419  (14.9s)
+12:48:19  arm telemetry_only: F1@50 0.8419  (510s)  -> runs/20260911-114547/results.json
+Using cache found in /home/imerit/.cache/torch/hub/facebookresearch_dinov2_main
+/home/imerit/.cache/torch/hub/facebookresearch_dinov2_main/dinov2/layers/swiglu_ffn.py:51: UserWarning: xFormers is not available (SwiGLU)
+  warnings.warn("xFormers is not available (SwiGLU)")
+/home/imerit/.cache/torch/hub/facebookresearch_dinov2_main/dinov2/layers/attention.py:33: UserWarning: xFormers is not available (Attention)
+  warnings.warn("xFormers is not available (Attention)")
+/home/imerit/.cache/torch/hub/facebookresearch_dinov2_main/dinov2/layers/block.py:40: UserWarning: xFormers is not available (Block)
+  warnings.warn("xFormers is not available (Block)")
+12:48:20  using MLP layer as FFN
+12:48:22  arm vision_nearest: starting
+12:48:23      vision 1/89  2025-01-09-13-59-54  4487 tokens  0.9s
+12:48:24      vision 2/89  2025-01-09-14-28-47  4422 tokens  0.8s
+12:48:25      vision 3/89  2025-01-09-14-40-21  2184 tokens  0.6s
+12:48:25      vision 4/89  2025-01-09-14-47-32  2600 tokens  0.7s
+12:48:26      vision 5/89  2025-01-09-14-57-02  1694 tokens  0.6s
+12:48:27      vision 6/89  2025-01-09-15-18-29  3190 tokens  0.8s
+12:48:27      vision 7/89  2025-01-09-15-27-49  849 tokens  0.3s
+12:48:27      vision 8/89  2025-01-09-15-30-21  2190 tokens  0.6s
+12:48:28      vision 9/89  2025-01-09-15-37-27  3525 tokens  0.7s
+12:48:28      vision 10/89  2025-01-09-15-46-39  719 tokens  0.2s
+12:48:29      vision 11/89  2025-01-09-15-49-10  2559 tokens  0.6s
+12:48:29      vision 12/89  2025-01-09-16-55-42  2271 tokens  0.6s
+12:58:31      vision 13/89  2025-01-09-17-03-05  4554 tokens  601.7s

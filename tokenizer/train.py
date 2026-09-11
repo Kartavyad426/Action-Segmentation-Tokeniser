@@ -107,6 +107,7 @@ def train_tokenizer(
     batch_size: int = 64,
     lr: float = 1e-3,
     device: str = "cuda",
+    seed: int = 0,
     val_paths: list[str] | None = None,
     verbose: bool = True,
     on_epoch=None,
@@ -116,6 +117,11 @@ def train_tokenizer(
         # small (measured: 249ms/batch at default thread count vs 1.79ms/batch at 1 thread) —
         # the synchronization cost dominates for a model/batch this tiny.
         torch.set_num_threads(1)
+
+    # Seeded before any weight init or shuffling, so a run is reproducible from its config
+    # and a deliberate repeat differs only by this number.
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
     telemetry_list = _load_all_telemetry(demo_paths)
     in_channels = telemetry_list[0].shape[1]
@@ -150,7 +156,8 @@ def train_tokenizer(
             "config": {
                 "fingerprint": tokenizer_fingerprint(
                     demo_paths, window=window, stride=stride, latent_dim=latent_dim,
-                    num_codes=num_codes, hidden=hidden, epochs=epochs, batch_size=batch_size, lr=lr,
+                    num_codes=num_codes, hidden=hidden, epochs=epochs, batch_size=batch_size,
+                    lr=lr, seed=seed,
                 ),
                 "in_channels": in_channels,
                 "window": window,
