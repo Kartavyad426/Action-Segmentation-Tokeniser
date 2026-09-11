@@ -51,11 +51,13 @@ def _evaluate(model, loader, device: str, num_codes: int):
     failure) while a higher-loss epoch had 136. Loss alone is the wrong selection criterion.
     """
     model.eval()
-    total, count = 0.0, 0
+    total, recon, count = 0.0, 0.0, 0
     counts = torch.zeros(num_codes)
     for batch in loader:
         batch = batch.to(device)
-        total += model(batch)["loss"].item() * batch.shape[0]
+        out = model(batch)
+        total += out["loss"].item() * batch.shape[0]
+        recon += out["recon_loss"].item() * batch.shape[0]
         count += batch.shape[0]
         _, indices = model.encode_tokens(batch)
         counts += torch.bincount(indices.cpu(), minlength=num_codes).float()
@@ -65,11 +67,17 @@ def _evaluate(model, loader, device: str, num_codes: int):
     nonzero = probs[probs > 0]
     entropy = -(nonzero * nonzero.log()).sum().item()
     utilization = entropy / np.log(num_codes) if num_codes > 1 else 0.0
-    return total / max(count, 1), utilization
+    return total / max(count, 1), recon / max(count, 1), utilization
 
 
 def select_best_epoch(history, min_utilization: float = 0.35) -> int | None:
-    """The epoch to keep.
+    """Which epoch a selection rule *would* choose. Reported, not acted on.
+
+    Deliberately not used to pick the checkpoint. Three different selection rules were tried
+    in one session -- lowest loss, highest utilization, floor-then-lowest-loss -- and each one
+    changed which tokenizer a run produced, silently invalidating comparisons against runs
+    made under the previous rule. A run now keeps its final epoch, which is deterministic and
+    needs no rule at all. This function stays so the number is visible alongside the others.
 
     Neither available number is sufficient alone, and each is saturated by a different
     degenerate tokenizer:
@@ -81,17 +89,25 @@ def select_best_epoch(history, min_utilization: float = 0.35) -> int | None:
       maxes out entropy while carrying no information -- the same trap as scoring boundary
       alignment on recall alone.
 
-    So the utilization floor (the gate's own threshold) rejects collapse, and held-out loss
-    discriminates among the epochs clearing it, where a random assignment would reconstruct
-    badly. If no epoch clears the floor there is no good checkpoint: return the least
-    collapsed one and let the gate refuse it.
+    So the utilization floor (the gate's own threshold) rejects collapse, and held-out
+    *reconstruction* error discriminates among the epochs clearing it, where a random
+    assignment would reconstruct badly. If no epoch clears the floor there is no good
+    checkpoint: return the least collapsed one and let the gate refuse it.
+
+    Reconstruction error specifically, not total loss. Total loss is recon + codebook +
+    commitment, and the last two GROW as codes spread out of their collapsed initialization,
+    so ranking on it systematically picks the least-developed tokenizer that scrapes past the
+    floor. Measured: it chose epoch 4 (utilization 0.510, ~25 live codes) over epoch 20
+    (0.762, ~100) on an otherwise identical run. Reconstruction error carries no VQ term and
+    is the uncontaminated signal.
     """
     scored = [h for h in history if h.get("val_utilization") is not None]
     if not scored:
         return None
     healthy = [h for h in scored if h["val_utilization"] >= min_utilization]
     if healthy:
-        return min(healthy, key=lambda h: h["val_loss"])["epoch"]
+        key = "val_recon_loss" if healthy[0].get("val_recon_loss") is not None else "val_loss"
+        return min(healthy, key=lambda h: h[key])["epoch"]
     return max(scored, key=lambda h: h["val_utilization"])["epoch"]
 
 
@@ -169,8 +185,6 @@ def train_tokenizer(
         torch.save(payload, path + ".tmp")
         os.replace(path + ".tmp", path)
 
-    best_path = out_path[:-3] + ".best.pt" if out_path.endswith(".pt") else out_path + ".best"
-    best_val_loss, best_epoch, best_utilization = None, None, None
     final_loss = None
     history = []
     for epoch in range(1, epochs + 1):
@@ -187,33 +201,37 @@ def train_tokenizer(
             seen += batch.shape[0]
 
         train_loss = running / max(seen, 1)
-        val_loss, val_utilization = (
-            _evaluate(model, val_loader, device, num_codes) if val_loader is not None else (None, None)
+        val_loss, val_recon_loss, val_utilization = (
+            _evaluate(model, val_loader, device, num_codes)
+            if val_loader is not None else (None, None, None)
         )
         history.append({
-            "epoch": epoch, "train_loss": train_loss,
-            "val_loss": val_loss, "val_utilization": val_utilization,
+            "epoch": epoch, "train_loss": train_loss, "val_loss": val_loss,
+            "val_recon_loss": val_recon_loss, "val_utilization": val_utilization,
         })
+        # The checkpoint is simply the latest epoch. Written every epoch so a kill costs
+        # nothing, and never replaced by a "better" one -- see select_best_epoch.
         save(out_path, epoch, train_loss, val_loss)
-        if select_best_epoch(history) == epoch:
-            best_val_loss, best_epoch, best_utilization = val_loss, epoch, val_utilization
-            save(best_path, epoch, train_loss, val_loss)
         if on_epoch is not None:
             on_epoch(epoch, history)
         if verbose:
             val_str = (
-                f"  val {val_loss:.5f}  codebook {val_utilization:.3f}"
+                f"  val {val_loss:.5f}  recon {val_recon_loss:.5f}"
+                f"  codebook {val_utilization:.3f}"
                 if val_loss is not None else ""
             )
             log.info(f"  tokenizer epoch {epoch:>3}/{epochs}  train {train_loss:.5f}{val_str}")
 
+    would_select = select_best_epoch(history)
+    chosen = next((h for h in history if h["epoch"] == would_select), None)
     return {
         "final_loss": final_loss,
         "history": history,
-        "best_epoch": best_epoch,
-        "best_val_loss": best_val_loss,
-        "best_utilization": best_utilization,
-        "best_checkpoint": best_path if best_epoch is not None else None,
+        "selected_epoch": epochs,          # what this run actually kept
+        "best_epoch": would_select,        # what a selection rule would have picked
+        "best_val_loss": chosen["val_loss"] if chosen else None,
+        "best_utilization": chosen["val_utilization"] if chosen else None,
+        "best_checkpoint": None,
     }
 
 

@@ -44,34 +44,27 @@ def test_a_checkpoint_written_mid_training_is_loadable(tmp_path, fake_telemetry)
     assert loaded.get("ok") is True
 
 
-def test_best_validation_checkpoint_is_kept_separately(tmp_path, fake_telemetry):
-    # Training loss bottomed at epoch 4 and rose to epoch 20 on the real corpus, so the
-    # final-epoch checkpoint is knowingly worse than the best one seen.
+def test_no_separate_best_checkpoint_is_written(tmp_path, fake_telemetry):
+    # A "best" checkpoint implies a selection rule. There isn't one any more -- the run keeps
+    # its final epoch, and what a rule *would* have chosen is reported instead.
+    import os
     out = str(tmp_path / "t.pt")
 
     result = train_tokenizer(
         ["a", "b"], out, val_paths=["c"], epochs=4, window=10, batch_size=8, device="cpu"
     )
 
-    best = str(tmp_path / "t.best.pt")
-    import os
-    assert os.path.exists(best)
-    # the kept epoch is whatever the selection rule picks, not simply the lowest loss --
-    # lowest loss selects for codebook collapse
-    assert result["best_epoch"] == select_best_epoch(result["history"])
-    chosen = next(h for h in result["history"] if h["epoch"] == result["best_epoch"])
-    assert result["best_val_loss"] == chosen["val_loss"]
-    assert result["best_utilization"] == chosen["val_utilization"]
-
-
-def test_no_best_checkpoint_without_validation_demos(tmp_path, fake_telemetry):
-    import os
-    out = str(tmp_path / "t.pt")
-
-    result = train_tokenizer(["a"], out, epochs=2, window=10, batch_size=8, device="cpu")
-
     assert not os.path.exists(str(tmp_path / "t.best.pt"))
+    assert result["best_checkpoint"] is None
+    assert result["best_epoch"] is not None, "still reported as a metric"
+
+
+def test_no_selection_metric_without_validation_demos(tmp_path, fake_telemetry):
+    result = train_tokenizer(["a"], str(tmp_path / "t.pt"), epochs=2, window=10,
+                             batch_size=8, device="cpu")
+
     assert result["best_epoch"] is None
+    assert result["selected_epoch"] == 2
 
 
 def test_history_records_codebook_utilization_per_epoch(tmp_path, fake_telemetry):
@@ -131,3 +124,71 @@ def test_selection_falls_back_to_the_least_collapsed_epoch_when_none_clear_the_f
     ]
 
     assert select_best_epoch(history, min_utilization=0.35) == 1
+
+
+def test_selection_uses_reconstruction_error_not_total_loss():
+    # Total VQ-VAE loss = recon + codebook + commitment. The last two GROW as codes spread
+    # out of their collapsed initialization, so "lowest total loss above the floor"
+    # systematically picks the least-developed tokenizer that scrapes past it. Measured: it
+    # chose epoch 4 (utilization 0.510, ~25 live codes) over epoch 20 (0.762, ~100).
+    # Reconstruction error is the uncontaminated signal.
+    history = [
+        {"epoch": 4,  "train_loss": 1.0, "val_loss": 1.1199, "val_recon_loss": 0.62,
+         "val_utilization": 0.510},
+        {"epoch": 20, "train_loss": 1.0, "val_loss": 1.3469, "val_recon_loss": 0.35,
+         "val_utilization": 0.762},
+    ]
+
+    assert select_best_epoch(history, min_utilization=0.35) == 20
+
+
+def test_history_records_reconstruction_error_separately(tmp_path, fake_telemetry):
+    result = train_tokenizer(
+        ["a", "b"], str(tmp_path / "t.pt"), val_paths=["c"], epochs=2,
+        window=10, num_codes=8, batch_size=16, device="cpu", verbose=False,
+    )
+
+    for h in result["history"]:
+        assert h["val_recon_loss"] is not None
+        # total loss carries the VQ terms on top of reconstruction
+        assert h["val_loss"] >= h["val_recon_loss"]
+
+
+def test_selection_falls_back_to_total_loss_for_histories_without_recon():
+    # older runs recorded no recon term
+    history = [
+        {"epoch": 1, "train_loss": 1.0, "val_loss": 2.0, "val_utilization": 0.60},
+        {"epoch": 2, "train_loss": 1.0, "val_loss": 1.0, "val_utilization": 0.60},
+    ]
+
+    assert select_best_epoch(history, min_utilization=0.35) == 2
+
+
+def test_the_checkpoint_is_the_final_epoch_not_a_selected_one(tmp_path, fake_telemetry):
+    # Selection is deliberately not applied. Three different selection rules were tried in
+    # one session and each one changed which tokenizer a run produced, silently invalidating
+    # comparisons against earlier runs. The final epoch is deterministic and needs no rule.
+    out = str(tmp_path / "t.pt")
+
+    result = train_tokenizer(
+        ["a", "b"], out, val_paths=["c"], epochs=4, window=10, num_codes=8,
+        batch_size=16, device="cpu", verbose=False,
+    )
+
+    assert load_checkpoint(out)[3]["window"] == 10
+    import torch
+    assert torch.load(out, weights_only=False)["epoch"] == 4, "must be the last epoch"
+
+
+def test_selection_metrics_are_still_reported_just_not_acted_on(tmp_path, fake_telemetry):
+    result = train_tokenizer(
+        ["a", "b"], str(tmp_path / "t.pt"), val_paths=["c"], epochs=4, window=10,
+        num_codes=8, batch_size=16, device="cpu", verbose=False,
+    )
+
+    # the metrics remain, for a human to read
+    assert all(h["val_utilization"] is not None for h in result["history"])
+    assert all(h["val_recon_loss"] is not None for h in result["history"])
+    # and what a selection rule *would* have chosen is reported, without being used
+    assert result["best_epoch"] == select_best_epoch(result["history"])
+    assert result["selected_epoch"] == 4
