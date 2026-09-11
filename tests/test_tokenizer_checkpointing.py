@@ -56,9 +56,12 @@ def test_best_validation_checkpoint_is_kept_separately(tmp_path, fake_telemetry)
     best = str(tmp_path / "t.best.pt")
     import os
     assert os.path.exists(best)
-    val_losses = [h["val_loss"] for h in result["history"]]
-    assert result["best_epoch"] == 1 + val_losses.index(min(val_losses))
-    assert result["best_val_loss"] == min(val_losses)
+    # the kept epoch is whatever the selection rule picks, not simply the lowest loss --
+    # lowest loss selects for codebook collapse
+    assert result["best_epoch"] == select_best_epoch(result["history"])
+    chosen = next(h for h in result["history"] if h["epoch"] == result["best_epoch"])
+    assert result["best_val_loss"] == chosen["val_loss"]
+    assert result["best_utilization"] == chosen["val_utilization"]
 
 
 def test_no_best_checkpoint_without_validation_demos(tmp_path, fake_telemetry):
@@ -106,3 +109,25 @@ def test_select_best_epoch_breaks_ties_on_loss():
 def test_select_best_epoch_returns_none_without_validation():
     assert select_best_epoch([{"epoch": 1, "train_loss": 1.0, "val_loss": None,
                                "val_utilization": None}]) is None
+
+
+def test_selection_prefers_low_loss_among_epochs_that_clear_the_utilization_floor():
+    # Utilization alone is gameable: a tokenizer assigning codes at random maxes out
+    # entropy while carrying no information, the same trap as pure boundary recall. So the
+    # floor rejects collapse, and reconstruction loss discriminates among healthy epochs.
+    history = [
+        {"epoch": 1, "train_loss": 2.0, "val_loss": 2.0, "val_utilization": 0.99},  # noisy
+        {"epoch": 2, "train_loss": 1.0, "val_loss": 1.0, "val_utilization": 0.60},  # healthy
+        {"epoch": 3, "train_loss": 0.4, "val_loss": 0.4, "val_utilization": 0.20},  # collapsed
+    ]
+
+    assert select_best_epoch(history, min_utilization=0.35) == 2
+
+
+def test_selection_falls_back_to_the_least_collapsed_epoch_when_none_clear_the_floor():
+    history = [
+        {"epoch": 1, "train_loss": 2.0, "val_loss": 2.0, "val_utilization": 0.30},
+        {"epoch": 2, "train_loss": 0.5, "val_loss": 0.5, "val_utilization": 0.10},
+    ]
+
+    assert select_best_epoch(history, min_utilization=0.35) == 1

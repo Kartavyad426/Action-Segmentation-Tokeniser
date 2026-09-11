@@ -68,16 +68,31 @@ def _evaluate(model, loader, device: str, num_codes: int):
     return total / max(count, 1), utilization
 
 
-def select_best_epoch(history) -> int | None:
-    """The epoch to keep: highest codebook utilization, ties broken by lower loss.
+def select_best_epoch(history, min_utilization: float = 0.35) -> int | None:
+    """The epoch to keep.
 
-    Selecting on loss alone selects for codebook collapse (see `_evaluate`), which is the
-    one tokenizer failure the downstream gate exists to catch.
+    Neither available number is sufficient alone, and each is saturated by a different
+    degenerate tokenizer:
+
+    - Selecting on loss selects for *collapse*. Total VQ-VAE loss falls when the encoder
+      collapses onto a few codes, because the commitment and codebook terms shrink toward
+      zero. Measured: the lowest-loss epoch had 8 effective codes of 512 and failed the gate.
+    - Selecting on utilization selects for *noise*. A tokenizer assigning codes at random
+      maxes out entropy while carrying no information -- the same trap as scoring boundary
+      alignment on recall alone.
+
+    So the utilization floor (the gate's own threshold) rejects collapse, and held-out loss
+    discriminates among the epochs clearing it, where a random assignment would reconstruct
+    badly. If no epoch clears the floor there is no good checkpoint: return the least
+    collapsed one and let the gate refuse it.
     """
     scored = [h for h in history if h.get("val_utilization") is not None]
     if not scored:
         return None
-    return max(scored, key=lambda h: (h["val_utilization"], -h["val_loss"]))["epoch"]
+    healthy = [h for h in scored if h["val_utilization"] >= min_utilization]
+    if healthy:
+        return min(healthy, key=lambda h: h["val_loss"])["epoch"]
+    return max(scored, key=lambda h: h["val_utilization"])["epoch"]
 
 
 def train_tokenizer(
