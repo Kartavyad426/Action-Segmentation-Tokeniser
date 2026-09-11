@@ -30,11 +30,33 @@ all-modalities 74.6, vision contributing +0.1). Nowhere near Nomadic's claimed 7
 
 ### Provenance
 
-- git `c46aec7`, torch 2.11.0+cu128, RTX PRO 1000 Blackwell (8 GB)
+- git `c46aec7`, torch 2.11.0+cu128, python 3.12.13, RTX PRO 1000 Blackwell (8 GB)
 - 89 train / 22 validation / 37 test demos, from REASSEMBLE's official `split1`
 - tokenizer fingerprint `c0c24bcfd26cbbe6`, 20 epochs, 512 codes, 32-dim latent, 150 ms window
 - classifier: MS-TCN 3 stages x 9 layers x 64 ch, 30 epochs, CE + 0.15·T-MSE
-- **no seed** — this run predates seeding, so it is not exactly reproducible
+- full demo membership of all three splits is recorded in `data/config.json`, not just counts
+
+### Provenance gaps in this run
+
+Two fields that later runs record are missing here, because both landed *while this run was
+in flight*:
+
+- **No seed.** Seeding was added at commit `fec9981`, after this run started. Its
+  `tokenizer_hp` and `classifier_hp` therefore carry no seed, and **this exact run cannot be
+  reproduced** — only re-sampled from the same distribution. Runs from `fec9981` onward can.
+- **No GPU power state.** The provenance capture (`pstate`, `clocks.sm`, enforced power
+  limit) was added at commit `9aefa44`. This matters more than it sounds: the laptop moved
+  from battery to AC *during this run*, and the GPU was clamped to 180 MHz / 15 W for part of
+  it. Identical extraction work measured 601.7 s throttled and 24.0 s on AC; classifier
+  epochs ran ~17 s throttled and 0.8 s on AC.
+
+  **Consequence for this run's timings:** the per-arm `seconds` in `data/results.json` are not
+  comparable to each other. The telemetry-only arm's 510 s was measured entirely inside the
+  throttled window and would be roughly 20-40 s on AC. The vision arms span both regimes.
+  **The F1@50 numbers are unaffected** — they are not timing-dependent.
+
+A side effect of the seed being added mid-run: this run's tokenizer fingerprint predates it,
+so resuming from it needs `--force-resume`. See `RECOVERY.md`.
 
 ### Tokenizer that produced it
 
