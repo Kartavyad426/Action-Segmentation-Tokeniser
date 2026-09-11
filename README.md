@@ -19,9 +19,11 @@ contact-rich assembly and disassembly.
 |---|---|---|
 | telemetry only *(control)* | **0.8419** | — |
 | vision, 1 frame per token | **0.7746** | **-0.067** |
-| vision, pooled over token window | *running* | |
+| vision, pooled over token window | **0.8152** | **-0.027** |
 
-**Vision made segmentation worse.** Directionally consistent with
+**Vision did not help in either sampling regime**, though pooling every frame in a token's
+window rather than taking one recovers about 60% of the deficit — so temporal subsampling was
+a substantial part of why the naive version hurt. Directionally consistent with
 [M2R2](https://arxiv.org/html/2504.18662), whose ablation on this same dataset found vision
 adding +0.1 to proprioception (74.5 → 74.6) and vision alone scoring 21.6.
 

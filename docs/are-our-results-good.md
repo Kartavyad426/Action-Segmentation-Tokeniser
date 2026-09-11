@@ -12,20 +12,39 @@ Numbers referenced here are from `results/v1` (validation split, single run, no 
 
 ## 1. Why vision is hurting
 
-Measured: telemetry-only F1@50 **0.8419**, vision at one frame per token **0.7746**, delta
-**-0.067**. Candidate explanations, ranked by how well *our own* evidence supports them.
+Measured: telemetry-only F1@50 **0.8419**, vision at one frame per token **0.7746** (-0.067),
+vision pooled over the token's window **0.8152** (-0.027).
 
-### Capacity without information — best supported
+**Arm 3 settled the main open question: pooling recovers about 60% of the deficit.** So
+temporal subsampling was a real and substantial part of why vision hurt — but not all of it.
+Candidate explanations below, ranked by how well our own evidence supports them.
 
-| | final train loss | val F1@50 |
+### Capacity without information — best supported, and now across three points
+
+| arm | final train loss | val F1@50 |
 |---|---|---|
-| telemetry only | 0.8530 | **0.8419** |
-| vision, 1 frame/token | **0.7913** | 0.7746 |
+| vision, 1 frame/token | **0.7913** (lowest) | **0.7746** (worst) |
+| vision, pooled | 0.8216 | 0.8152 |
+| telemetry only | **0.8530** (highest) | **0.8419** (best) |
 
-The vision arm fits the training data **better** and generalizes **worse**. That distinction
-matters: a feature that was merely uninformative would leave both curves roughly unchanged.
-Ours traded generalization for fit. 384 extra input dimensions against ~199k training tokens
-and 10 classes buys capacity to memorize.
+Training loss orders **inversely and monotonically** against validation F1 across all three
+arms. The better an arm fits the training data, the worse it generalizes. A feature that was
+merely uninformative would leave both columns roughly unchanged; ours traded generalization
+for fit, and it did so in proportion to how much per-frame detail it was given.
+
+Pooling is the informative middle point: averaging ~4.5 frames per token *raises* training
+loss relative to a single frame, because the average carries less memorizable per-frame
+idiosyncrasy — and validation improves correspondingly. That is what you would expect if the
+extra dimensions were being spent on memorization rather than signal.
+
+### Temporal subsampling — confirmed as a substantial contributor
+
+Arm 3 tested this directly and recovered 0.041 of the 0.067 deficit. So a majority of the
+naive vision arm's damage came from handing each token a single still photograph while the
+motion branch summarised its entire 150 ms window.
+
+What remains after fixing it is **-0.027**, which is small enough that the reproducibility
+study may not be able to distinguish it from zero.
 
 ### One frame per token carries no motion
 
@@ -110,7 +129,8 @@ That is a close description of our two curves.
 
 In rough order of cost:
 
-1. **Arm 3** (already running) — pooling frames tests whether subsampling was the problem.
+1. ~~**Arm 3** — pooling frames tests whether subsampling was the problem.~~ **Done:
+   recovered 60% of the deficit. Subsampling was a substantial part of it.**
 2. **A gated or attention-based fusion** rather than concat+project, giving the model a path
    to attenuate vision. This is the M2R2 design difference most likely to explain the gap.
 3. **Per-dimension standardization** of the DINOv2 feature over training frames, removing the
@@ -130,6 +150,7 @@ and these are a different question.
 | | F1@50 | measured on |
 |---|---|---|
 | **ours, telemetry only** | **84.19** | validation (22 demos, carved from the train half) |
+| ours, vision pooled | 81.52 | validation |
 | M2R2, proprioception only | 74.5 | REASSEMBLE official test split |
 | M2R2, best configuration (with ASRF) | 82.4 | REASSEMBLE official test split |
 | Nomadic, "context alone" | 79.5 (claimed) | unspecified |

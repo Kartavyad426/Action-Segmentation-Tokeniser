@@ -7,23 +7,26 @@ Reference targets and known divergences live in
 Numbering: `v1`, `v2`, ... one per run that produced a usable result. Aborted and failed
 attempts are not numbered; they stay in `runs/` with a `status.json` saying why.
 
-**Status: arms 1 and 2 complete, arm 3 (pooled vision) pending.** Scored on the 22-demo
-**validation** split, not the held-out test split. Nothing here is comparable to published
-numbers yet.
+**Status: complete, all three arms.** Scored on the 22-demo **validation** split, not the
+held-out test split. Nothing here is comparable to published numbers yet.
 
 ![F1@50 by arm](images/f1_comparison.png)
 
 ### Headline
 
-| arm | F1@50 (final epoch) | F1@50 (best epoch) | delta vs control |
-|---|---|---|---|
-| telemetry only *(control)* | **0.8419** | 0.8419 @30 | — |
-| vision, 1 frame/token | **0.7746** | 0.8096 @25 | **-0.0673** / -0.0323 |
-| vision, pooled over window | pending | pending | pending |
+| arm | F1@50 (final) | F1@50 (best) | delta (final) | delta (best) | train time |
+|---|---|---|---|---|---|
+| telemetry only *(control)* | **0.8419** | 0.8419 @30 | — | — | 8 min |
+| vision, 1 frame/token | **0.7746** | 0.8096 @25 | **-0.0673** | -0.0323 | 58 min |
+| vision, pooled over window | **0.8152** | 0.8152 @30 | **-0.0266** | -0.0266 | 108 min |
 
-**Vision made temporal action segmentation worse.** Directionally consistent with M2R2's
-ablation (74.5% → 74.6%, vision barely helping in their late-fusion design), but we measured
-an actual degradation rather than a wash. Nowhere near Nomadic's claimed 79.5% → 93.1%.
+**Vision did not help, in either sampling regime.** But pooling recovers about 60% of the
+deficit (-0.067 → -0.027), which is the single most informative number in this run: it says
+temporal subsampling was a real and substantial part of why vision hurt, and that what
+remains after fixing it is smaller and may be within noise.
+
+Directionally consistent with M2R2's ablation on this same dataset (proprioception 74.5 →
+all-modalities 74.6, vision contributing +0.1). Nowhere near Nomadic's claimed 79.5 → 93.1.
 
 ### Provenance
 
@@ -60,37 +63,62 @@ F1@50 for *both* arms, independent of vision.
 
 ![classifier training](images/classifier_training.png)
 
-| epoch | telemetry loss | telemetry F1 | vision loss | vision F1 |
-|---|---|---|---|---|
-| 5 | 1.7137 | 0.7597 | 1.7637 | 0.6998 |
-| 10 | 1.3268 | 0.8164 | 1.3523 | 0.7604 |
-| 15 | 1.1285 | 0.8225 | 1.1820 | 0.7356 |
-| 20 | 1.0262 | 0.8235 | 1.0170 | 0.7993 |
-| 25 | 0.9243 | 0.8211 | 0.8517 | 0.8096 |
-| 30 | 0.8530 | **0.8419** | **0.7913** | 0.7746 |
+Validation F1@50 at each scored epoch:
 
-Two things matter here:
+| epoch | telemetry | vision nearest | vision pooled |
+|---|---|---|---|
+| 5 | 0.7597 | 0.6998 | 0.6809 |
+| 10 | 0.8164 | 0.7604 | 0.7000 |
+| 15 | 0.8225 | 0.7356 | 0.7411 |
+| 20 | 0.8235 | 0.7993 | 0.7407 |
+| 25 | 0.8211 | 0.8096 | 0.8005 |
+| 30 | **0.8419** | 0.7746 | **0.8152** |
 
-**1. The vision arm fits the training data BETTER and generalizes WORSE.** Final training
-loss 0.7913 with vision against 0.8530 without, while validation F1 goes the other way. That
-is the signature of overfitting, not of an unhelpful feature: the 384 extra input dimensions
-give the classifier capacity to memorize rather than information that transfers. An
-uninformative-but-harmless feature would leave both curves roughly unchanged; this actively
-traded generalization for fit.
+**The control arm is above both vision arms at every single scored epoch.** Whatever else is
+uncertain, that is not a stopping-point artifact.
 
-**2. The reported delta depends on an arbitrary stopping point.** We report the final epoch.
+Three things matter here:
+
+**1. Final training loss orders inversely to validation F1, monotonically across all three
+arms.**
+
+| arm | final train loss | val F1@50 |
+|---|---|---|
+| vision, 1 frame/token | **0.7913** (lowest) | **0.7746** (worst) |
+| vision, pooled | 0.8216 | 0.8152 |
+| telemetry only | **0.8530** (highest) | **0.8419** (best) |
+
+The better an arm fits the training data, the worse it generalizes — a textbook overfitting
+signature rather than a sign that vision is merely uninformative. An uninformative-but-
+harmless feature would leave both columns roughly unchanged. Note also where pooling lands:
+averaging ~4.5 frames per token *raises* training loss relative to a single frame, because
+the average is smoother and carries less memorizable per-frame idiosyncrasy — and its
+validation score improves correspondingly.
+
+**2. Pooling recovers most of the gap, which answers the question arm 3 was built to ask.**
+Giving vision the same aggregate-don't-discard treatment telemetry already gets takes the
+deficit from -0.067 to -0.027. So a substantial part of "vision hurt" was an artifact of
+handing each token a single still photograph while the motion branch summarised its entire
+150 ms window. It was not the whole story — -0.027 remains — but it was most of it.
+
+**3. The reported delta depends on an arbitrary stopping point.** We report the final epoch.
 The vision arm peaked at 0.8096 on epoch 25 and fell to 0.7746 by epoch 30, and its curve is
 visibly noisier throughout (0.700 → 0.760 → 0.736 → 0.799 → 0.810 → 0.775) than the control's
 near-monotone climb. So:
 
-- delta at the final epoch: **-0.0673**
-- delta at each arm's best epoch: **-0.0323**
+- vision nearest: **-0.0673** at the final epoch, **-0.0323** at each arm's best epoch
+- vision pooled: **-0.0266** either way (it peaked at epoch 30)
 
-Both negative, so the direction of the conclusion is stable. The magnitude is not — it
-roughly halves. **There is no early stopping or best-epoch selection for the classifier**;
-`run_training` reports whatever epoch 30 happened to produce. Both arms are treated
-identically so the comparison is fair, but the number is more fragile than one figure
-suggests. This is the same mistake found and fixed in the tokenizer, still present here.
+Both negative under both conventions, so the direction is stable. The magnitude of the
+nearest arm's deficit is not — it roughly halves. And note that **both the control and the
+pooled arm were still improving at epoch 30**, so the 30-epoch budget is truncating them;
+the pooled arm in particular climbed 0.8005 → 0.8152 over the final five epochs.
+
+**There is no early stopping or best-epoch selection for the classifier.** `run_training`
+reports whatever epoch 30 happened to produce. All three arms are treated identically so the
+comparison is fair, but the numbers are more fragile than a single figure suggests, and two
+of the three arms were cut off mid-climb. This is the same mistake found and fixed in the
+tokenizer, still present in the classifier.
 
 ---
 
@@ -149,9 +177,10 @@ Not a settled explanation; the candidates, in the order the evidence supports th
 - **Camera is static and the scene changes slowly**, so adjacent tokens' vision features are
   near-duplicates, adding correlated noise rather than discriminative signal.
 
-Arm 3 discriminates between the first two: if pooling frames over the window (which adds
-short-horizon visual dynamics) recovers the gap, the problem was subsampling. If it does not,
-the problem is capacity or relevance.
+**Arm 3 has now discriminated between the first two, and the answer is "both".** Pooling
+recovered 60% of the deficit, so subsampling was real and substantial. The residual -0.027
+survives proper aggregation, so capacity-without-information or plain irrelevance accounts
+for the rest — consistent with M2R2 measuring vision-only at 21.6 F1@50 on this dataset.
 
 ---
 

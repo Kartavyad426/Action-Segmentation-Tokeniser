@@ -6,7 +6,7 @@ them.
 
 | version | run | scored on | headline |
 |---|---|---|---|
-| [v1](../results/v1/README.md) | `20260911-114547` | validation (22 demos) | telemetry-only **0.8419**, vision 1-frame/token **0.7746** (**-0.067**); pooled arm pending |
+| [v1](../results/v1/README.md) | `20260911-114547` | validation (22 demos) | telemetry **0.8419**; vision 1-frame/token **0.7746** (-0.067); vision pooled **0.8152** (-0.027) |
 
 See [are-our-results-good.md](are-our-results-good.md) for why vision appears to hurt, how
 these numbers sit against M2R2 and Nomadic, and what would be needed to claim anything.
