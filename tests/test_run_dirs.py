@@ -89,3 +89,17 @@ def test_adopting_refuses_a_previous_run_with_a_different_fingerprint(tmp_path):
 
     assert adopted is False
     assert not os.path.exists(new.checkpoint)
+
+
+def test_adopting_prefers_the_previous_runs_best_checkpoint(tmp_path):
+    # A run killed mid-training leaves a last-epoch checkpoint that is often worse than the
+    # best epoch it already saw; the best one is what compare.py would itself have selected.
+    import torch
+    old = new_run(str(tmp_path), now=datetime(2026, 9, 11, 10, 0, 0))
+    torch.save({"config": {"fingerprint": "F"}, "epoch": 11}, old.checkpoint)
+    torch.save({"config": {"fingerprint": "F"}, "epoch": 6}, old.checkpoint[:-3] + ".best.pt")
+
+    new = new_run(str(tmp_path), now=datetime(2026, 9, 11, 11, 0, 0))
+    assert adopt_previous_run(new, old.dir, fingerprint="F") is True
+
+    assert torch.load(new.checkpoint, weights_only=False)["epoch"] == 6

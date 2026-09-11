@@ -122,18 +122,23 @@ def adopt_previous_run(run: RunPaths, previous_dir: str, fingerprint: str) -> bo
         tokenizer_report=os.path.join(previous_dir, "tokenizer_report.json"),
         tokenizer_history=os.path.join(previous_dir, "tokenizer_history.json"),
     )
-    if not os.path.exists(old.checkpoint):
+    # Prefer the previous run's best held-out checkpoint: that is the one compare.py would
+    # itself have selected, and a run killed mid-training leaves a last-epoch checkpoint
+    # that is often worse than the best epoch it already saw.
+    best = old.checkpoint[:-3] + ".best.pt"
+    source = best if os.path.exists(best) else old.checkpoint
+    if not os.path.exists(source):
         return False
     try:
         import torch as _torch
 
-        found = _torch.load(old.checkpoint, map_location="cpu", weights_only=False)["config"].get("fingerprint")
+        found = _torch.load(source, map_location="cpu", weights_only=False)["config"].get("fingerprint")
     except Exception:
         return False
     if found != fingerprint:
         return False
 
-    shutil.copy2(old.checkpoint, run.checkpoint)
+    shutil.copy2(source, run.checkpoint)
     if os.path.exists(old.results):
         shutil.copy2(old.results, run.results)
     return True
