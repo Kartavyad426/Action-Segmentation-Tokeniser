@@ -1,0 +1,15 @@
+{
+  "fingerprint": "c0c24bcfd26cbbe6",
+  "reconstruction_error": 0.40343956502571815,
+  "codebook_utilization": 0.7247213614340077,
+  "effective_codes": 91.93181080443685,
+  "boundary": {
+    "boundary_recall": 0.5978995290931237,
+    "change_precision": 0.11532343977801641,
+    "f1": 0.19224356827983896,
+    "chance_recall": 0.4684388256216467,
+    "lift_over_chance": 0.12946070347147692,
+    "segment_purity": 0.5008798097337869
+  },
+  "n_demos": 22
+}

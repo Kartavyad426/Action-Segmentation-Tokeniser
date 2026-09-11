@@ -64,13 +64,6 @@
 12:48:03      epoch  29/30  loss 0.84753  (14.0s)
 12:48:18      epoch  30/30  loss 0.85299  val_f1 0.8419  (14.9s)
 12:48:19  arm telemetry_only: F1@50 0.8419  (510s)  -> runs/20260911-114547/results.json
-Using cache found in /home/imerit/.cache/torch/hub/facebookresearch_dinov2_main
-/home/imerit/.cache/torch/hub/facebookresearch_dinov2_main/dinov2/layers/swiglu_ffn.py:51: UserWarning: xFormers is not available (SwiGLU)
-  warnings.warn("xFormers is not available (SwiGLU)")
-/home/imerit/.cache/torch/hub/facebookresearch_dinov2_main/dinov2/layers/attention.py:33: UserWarning: xFormers is not available (Attention)
-  warnings.warn("xFormers is not available (Attention)")
-/home/imerit/.cache/torch/hub/facebookresearch_dinov2_main/dinov2/layers/block.py:40: UserWarning: xFormers is not available (Block)
-  warnings.warn("xFormers is not available (Block)")
 12:48:20  using MLP layer as FFN
 12:48:22  arm vision_nearest: starting
 12:48:23      vision 1/89  2025-01-09-13-59-54  4487 tokens  0.9s
@@ -219,8 +212,3 @@ Using cache found in /home/imerit/.cache/torch/hub/facebookresearch_dinov2_main
 13:54:32      vision 1/89  2025-01-09-13-59-54  4487 tokens  466.5s
 13:56:23      vision 2/89  2025-01-09-14-28-47  4422 tokens  111.1s
 13:57:16      vision 3/89  2025-01-09-14-40-21  2184 tokens  52.7s
-13:58:20      vision 4/89  2025-01-09-14-47-32  2600 tokens  64.2s
-13:59:03      vision 5/89  2025-01-09-14-57-02  1694 tokens  42.9s
-14:00:24      vision 6/89  2025-01-09-15-18-29  3190 tokens  81.0s
-14:00:46      vision 7/89  2025-01-09-15-27-49  849 tokens  21.7s
-14:01:42      vision 8/89  2025-01-09-15-30-21  2190 tokens  55.9s
