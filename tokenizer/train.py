@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -41,15 +42,42 @@ def _load_all_telemetry(demo_paths: list[str]):
 
 
 @torch.no_grad()
-def _evaluate_loss(model, loader, device: str) -> float:
+def _evaluate(model, loader, device: str, num_codes: int):
+    """Held-out loss and codebook utilization.
+
+    Both are needed, and they do not agree: total VQ-VAE loss falls when the encoder
+    collapses onto a few codes, because the commitment and codebook terms shrink toward zero.
+    Measured on real data, the lowest-loss epoch had 8 effective codes of 512 (a gate
+    failure) while a higher-loss epoch had 136. Loss alone is the wrong selection criterion.
+    """
     model.eval()
     total, count = 0.0, 0
+    counts = torch.zeros(num_codes)
     for batch in loader:
         batch = batch.to(device)
         total += model(batch)["loss"].item() * batch.shape[0]
         count += batch.shape[0]
+        _, indices = model.encode_tokens(batch)
+        counts += torch.bincount(indices.cpu(), minlength=num_codes).float()
     model.train()
-    return total / max(count, 1)
+
+    probs = counts / counts.sum().clamp(min=1)
+    nonzero = probs[probs > 0]
+    entropy = -(nonzero * nonzero.log()).sum().item()
+    utilization = entropy / np.log(num_codes) if num_codes > 1 else 0.0
+    return total / max(count, 1), utilization
+
+
+def select_best_epoch(history) -> int | None:
+    """The epoch to keep: highest codebook utilization, ties broken by lower loss.
+
+    Selecting on loss alone selects for codebook collapse (see `_evaluate`), which is the
+    one tokenizer failure the downstream gate exists to catch.
+    """
+    scored = [h for h in history if h.get("val_utilization") is not None]
+    if not scored:
+        return None
+    return max(scored, key=lambda h: (h["val_utilization"], -h["val_loss"]))["epoch"]
 
 
 def train_tokenizer(
@@ -120,7 +148,7 @@ def train_tokenizer(
         os.replace(path + ".tmp", path)
 
     best_path = out_path[:-3] + ".best.pt" if out_path.endswith(".pt") else out_path + ".best"
-    best_val_loss, best_epoch = None, None
+    best_val_loss, best_epoch, best_utilization = None, None, None
     final_loss = None
     history = []
     for epoch in range(1, epochs + 1):
@@ -137,16 +165,24 @@ def train_tokenizer(
             seen += batch.shape[0]
 
         train_loss = running / max(seen, 1)
-        val_loss = _evaluate_loss(model, val_loader, device) if val_loader is not None else None
-        history.append({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
+        val_loss, val_utilization = (
+            _evaluate(model, val_loader, device, num_codes) if val_loader is not None else (None, None)
+        )
+        history.append({
+            "epoch": epoch, "train_loss": train_loss,
+            "val_loss": val_loss, "val_utilization": val_utilization,
+        })
         save(out_path, epoch, train_loss, val_loss)
-        if val_loss is not None and (best_val_loss is None or val_loss < best_val_loss):
-            best_val_loss, best_epoch = val_loss, epoch
+        if select_best_epoch(history) == epoch:
+            best_val_loss, best_epoch, best_utilization = val_loss, epoch, val_utilization
             save(best_path, epoch, train_loss, val_loss)
         if on_epoch is not None:
             on_epoch(epoch, history)
         if verbose:
-            val_str = f"  val {val_loss:.5f}" if val_loss is not None else ""
+            val_str = (
+                f"  val {val_loss:.5f}  codebook {val_utilization:.3f}"
+                if val_loss is not None else ""
+            )
             log.info(f"  tokenizer epoch {epoch:>3}/{epochs}  train {train_loss:.5f}{val_str}")
 
     return {
@@ -154,6 +190,7 @@ def train_tokenizer(
         "history": history,
         "best_epoch": best_epoch,
         "best_val_loss": best_val_loss,
+        "best_utilization": best_utilization,
         "best_checkpoint": best_path if best_epoch is not None else None,
     }
 

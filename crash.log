@@ -1,0 +1,14 @@
+11:38:45  run directory runs/20260911-113845
+11:38:45  hang diagnostics: kill -USR1 358659 dumps stacks to runs/20260911-113845/faulthandler.log
+11:38:45  89 train demos, 22 validation demos
+11:38:45  config written to runs/20260911-113845/config.json (git 35857d9a, torch 2.11.0+cu128)
+11:38:45  tokenizer fingerprint c0c24bcfd26cbbe6
+11:38:45  resume from runs/20260911-104521: adopted tokenizer + results
+11:38:59  tokenizer health on 22 held-out demos
+11:38:59    reconstruction error   0.6805
+11:38:59    codebook utilization   0.330  (~8 effective codes)
+11:38:59    boundary f1            0.120  (recall 0.225, precision 0.087)
+11:38:59    boundary lift          +0.006  (chance 0.219)
+11:38:59    segment purity         0.775
+11:38:59    GATE FAILED: codebook collapse: utilization 0.330 < 0.350 (~8 effective codes) -- the classifier would be starved of discriminative signal
+tokenizer failed its quality gates; fix the tokenizer before training the classifier, or pass --skip-gates to proceed anyway

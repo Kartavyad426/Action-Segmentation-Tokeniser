@@ -80,7 +80,10 @@ def _load(run_dir, name):
 
 
 def plot_tokenizer_training(data, out_path):
-    epochs, train, val = tokenizer_series(data["history"])
+    history = data["history"]
+    epochs, train, val = tokenizer_series(history)
+    util_epochs = [h["epoch"] for h in history if h.get("val_utilization") is not None]
+    utils = [h["val_utilization"] for h in history if h.get("val_utilization") is not None]
     fig, ax = plt.subplots(figsize=(8, 4.5))
     ax.plot(epochs, train, "-o", ms=3, label="train", color="#4c72b0")
     if val:
@@ -97,8 +100,22 @@ def plot_tokenizer_training(data, out_path):
     ax.set_xlabel("epoch")
     ax.set_ylabel("VQ-VAE loss (recon + codebook + commitment)")
     ax.set_title("Tokenizer training")
-    ax.legend()
     ax.grid(alpha=0.3)
+
+    if utils:
+        # Plotted together deliberately: these two move in opposite directions. Loss falls
+        # when the codebook collapses, so the loss curve alone is misleading.
+        ax2 = ax.twinx()
+        ax2.plot(util_epochs, utils, "-s", ms=3, color="#55a868", label="codebook utilization")
+        ax2.axhline(0.35, color="#55a868", ls=":", lw=1, alpha=0.6)
+        ax2.annotate("gate threshold", xy=(epochs[0], 0.355), fontsize=7, color="#55a868")
+        ax2.set_ylabel("codebook utilization (normalized entropy)", color="#55a868")
+        ax2.set_ylim(0, 1)
+        ax2.tick_params(axis="y", labelcolor="#55a868")
+        lines = ax.get_lines() + ax2.get_lines()
+        ax.legend(lines, [l.get_label() for l in lines], fontsize=8, loc="center right")
+    else:
+        ax.legend()
     fig.tight_layout()
     fig.savefig(out_path, dpi=130)
     plt.close(fig)

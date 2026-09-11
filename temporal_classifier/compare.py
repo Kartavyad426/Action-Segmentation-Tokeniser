@@ -325,11 +325,14 @@ def main(eval_on: str = "val", runs_base: str = "runs", resume_from: str | None 
             json.dump({
                 "fingerprint": fingerprint, "history": result["history"],
                 "best_epoch": result["best_epoch"], "best_val_loss": result["best_val_loss"],
+                "best_utilization": result["best_utilization"],
             }, f, indent=2)
         if result["best_checkpoint"]:
             log.info(
-                f"best held-out loss {result['best_val_loss']:.5f} at epoch {result['best_epoch']}"
-                f"/{TOKENIZER_HP['epochs']}; using that checkpoint rather than the last"
+                f"best codebook utilization {result['best_utilization']:.3f} at epoch "
+                f"{result['best_epoch']}/{TOKENIZER_HP['epochs']} "
+                f"(held-out loss {result['best_val_loss']:.5f}); using that checkpoint "
+                f"rather than the last -- loss alone selects for codebook collapse"
             )
             shutil.copy2(result["best_checkpoint"], run.checkpoint)
         log.info(f"tokenizer ready at {run.checkpoint}")

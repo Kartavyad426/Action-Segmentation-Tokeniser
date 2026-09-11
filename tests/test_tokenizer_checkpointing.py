@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from tokenizer.train import load_checkpoint, train_tokenizer
+from tokenizer.train import load_checkpoint, select_best_epoch, train_tokenizer
 
 
 @pytest.fixture
@@ -69,3 +69,40 @@ def test_no_best_checkpoint_without_validation_demos(tmp_path, fake_telemetry):
 
     assert not os.path.exists(str(tmp_path / "t.best.pt"))
     assert result["best_epoch"] is None
+
+
+def test_history_records_codebook_utilization_per_epoch(tmp_path, fake_telemetry):
+    result = train_tokenizer(
+        ["a", "b"], str(tmp_path / "t.pt"), val_paths=["c"], epochs=3,
+        window=10, num_codes=8, batch_size=8, device="cpu",
+    )
+
+    assert all(0.0 <= h["val_utilization"] <= 1.0 for h in result["history"])
+
+
+def test_best_checkpoint_is_chosen_by_codebook_utilization_not_by_loss(tmp_path, fake_telemetry):
+    # Measured on real data: the lowest-loss epoch had a collapsed codebook (8 of 512
+    # effective codes, gate FAIL) while a higher-loss epoch had 136 (PASS). Total VQ-VAE
+    # loss falls when the encoder collapses onto a few codes, because the commitment and
+    # codebook terms shrink -- so selecting on loss selects for collapse.
+    out = str(tmp_path / "t.pt")
+    history = [
+        {"epoch": 1, "train_loss": 2.0, "val_loss": 2.0, "val_utilization": 0.80},
+        {"epoch": 2, "train_loss": 1.0, "val_loss": 1.0, "val_utilization": 0.20},
+    ]
+
+    assert select_best_epoch(history) == 1, "must not pick the low-loss collapsed epoch"
+
+
+def test_select_best_epoch_breaks_ties_on_loss():
+    history = [
+        {"epoch": 1, "train_loss": 2.0, "val_loss": 2.0, "val_utilization": 0.70},
+        {"epoch": 2, "train_loss": 1.0, "val_loss": 1.0, "val_utilization": 0.70},
+    ]
+
+    assert select_best_epoch(history) == 2
+
+
+def test_select_best_epoch_returns_none_without_validation():
+    assert select_best_epoch([{"epoch": 1, "train_loss": 1.0, "val_loss": None,
+                               "val_utilization": None}]) is None
